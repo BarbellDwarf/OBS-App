@@ -1,5 +1,48 @@
 // OBS Remote Control Application
-let OBSWebSocket = null;
+// OBS WebSocket wrapper using IPC
+class OBSWebSocketWrapper {
+  constructor() {
+    this.eventHandlers = {};
+  }
+  
+  async connect(url, password) {
+    const result = await window.electronAPI.obs.connect(url, password);
+    if (!result.success) {
+      const error = new Error(result.error);
+      error.code = result.code;
+      throw error;
+    }
+  }
+  
+  async disconnect() {
+    const result = await window.electronAPI.obs.disconnect();
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+  }
+  
+  async call(requestType, requestData) {
+    const result = await window.electronAPI.obs.call(requestType, requestData);
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+    return result.data;
+  }
+  
+  on(eventName, callback) {
+    if (!this.eventHandlers[eventName]) {
+      this.eventHandlers[eventName] = [];
+    }
+    this.eventHandlers[eventName].push(callback);
+  }
+  
+  _handleEvent(eventName, data) {
+    if (this.eventHandlers[eventName]) {
+      this.eventHandlers[eventName].forEach(callback => callback(data));
+    }
+  }
+}
+
 let obs = null;
 let isConnected = false;
 let isStudioMode = false;
@@ -39,27 +82,45 @@ const elements = {
 };
 
 // Initialize
-function init() {
+async function init() {
   console.log('Initializing OBS Remote Control...');
   console.log('electronAPI available:', typeof window.electronAPI);
   
-  // Check if OBS WebSocket library is available from Electron
-  if (typeof window.electronAPI === 'undefined' || typeof window.electronAPI.OBSWebSocket === 'undefined') {
-    console.error('OBS WebSocket library not available!');
+  // Check if electronAPI is available
+  if (typeof window.electronAPI === 'undefined' || typeof window.electronAPI.obs === 'undefined') {
+    console.error('Electron API not available!');
     console.error('electronAPI:', window.electronAPI);
-    alert('Error: OBS WebSocket library is not available. Please restart the application.');
+    alert('Error: Application API is not available. Please restart the application.');
     return;
   }
   
-  OBSWebSocket = window.electronAPI.OBSWebSocket;
-  console.log('OBSWebSocket class loaded:', typeof OBSWebSocket);
-  
-  obs = new OBSWebSocket();
-  console.log('OBSWebSocket instance created:', typeof obs);
-  
-  setupEventListeners();
-  loadSettings();
-  console.log('OBS Remote Control initialized successfully');
+  try {
+    // Create OBS instance in main process
+    const createResult = await window.electronAPI.obs.create();
+    if (!createResult.success) {
+      throw new Error(createResult.error);
+    }
+    console.log('OBS instance created in main process');
+    
+    // Create wrapper instance
+    obs = new OBSWebSocketWrapper();
+    console.log('OBS wrapper created:', typeof obs);
+    
+    // Setup event forwarding
+    window.electronAPI.obs.on((eventName, data) => {
+      obs._handleEvent(eventName, data);
+    });
+    
+    await window.electronAPI.obs.setupEvents();
+    console.log('OBS event forwarding setup');
+    
+    setupEventListeners();
+    loadSettings();
+    console.log('OBS Remote Control initialized successfully');
+  } catch (error) {
+    console.error('Initialization error:', error);
+    alert('Failed to initialize: ' + error.message);
+  }
 }
 
 // Setup event listeners
@@ -755,7 +816,7 @@ function clearIntervals() {
 
 // Initialize app when DOM is ready
 console.log('app.js loaded, waiting for DOMContentLoaded...');
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   console.log('DOMContentLoaded event fired!');
-  init();
+  await init();
 });

@@ -2,6 +2,15 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 
 let mainWindow;
+let OBSWebSocket;
+
+// Load OBS WebSocket in main process
+try {
+  OBSWebSocket = require('obs-websocket-js').default;
+  console.log('OBS WebSocket library loaded in main process');
+} catch (error) {
+  console.error('Failed to load OBS WebSocket library:', error);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -30,6 +39,89 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// Store OBS instance in main process
+let obs = null;
+
+// IPC handlers for OBS operations
+ipcMain.handle('obs:create', () => {
+  try {
+    if (!OBSWebSocket) {
+      throw new Error('OBS WebSocket library not loaded');
+    }
+    obs = new OBSWebSocket();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('obs:connect', async (event, url, password) => {
+  try {
+    if (!obs) {
+      throw new Error('OBS instance not created');
+    }
+    await obs.connect(url, password);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message, code: error.code };
+  }
+});
+
+ipcMain.handle('obs:disconnect', async () => {
+  try {
+    if (obs) {
+      await obs.disconnect();
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('obs:call', async (event, requestType, requestData) => {
+  try {
+    if (!obs) {
+      throw new Error('OBS instance not created');
+    }
+    const result = await obs.call(requestType, requestData);
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Handle OBS events by forwarding to renderer
+function setupOBSEventForwarding() {
+  if (!obs) return;
+  
+  const events = [
+    'ConnectionClosed',
+    'ConnectionError', 
+    'CurrentProgramSceneChanged',
+    'SceneListChanged',
+    'StreamStateChanged',
+    'RecordStateChanged',
+    'StudioModeStateChanged'
+  ];
+  
+  events.forEach(eventName => {
+    obs.on(eventName, (data) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('obs:event', { eventName, data });
+      }
+    });
+  });
+}
+
+ipcMain.handle('obs:setupEvents', () => {
+  try {
+    setupOBSEventForwarding();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 
 app.on('ready', createWindow);
 
