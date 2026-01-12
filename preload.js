@@ -1,6 +1,8 @@
 const { contextBridge } = require('electron');
+const OBSWebSocket = require('obs-websocket-js').default;
 
-// Expose a minimal API to the renderer process
+// Expose OBS WebSocket and platform info to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
-  platform: process.platform
+  platform: process.platform,
+  OBSWebSocket: OBSWebSocket
 });

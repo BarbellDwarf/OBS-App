@@ -40,15 +40,23 @@ const elements = {
 
 // Initialize
 function init() {
-  // Check if OBS WebSocket library is loaded
-  if (typeof window.OBSWebSocket === 'undefined') {
-    console.error('OBS WebSocket library not loaded!');
-    alert('Error: OBS WebSocket library failed to load. Please check your internet connection and reload the page.');
+  console.log('Initializing OBS Remote Control...');
+  console.log('electronAPI available:', typeof window.electronAPI);
+  
+  // Check if OBS WebSocket library is available from Electron
+  if (typeof window.electronAPI === 'undefined' || typeof window.electronAPI.OBSWebSocket === 'undefined') {
+    console.error('OBS WebSocket library not available!');
+    console.error('electronAPI:', window.electronAPI);
+    alert('Error: OBS WebSocket library is not available. Please restart the application.');
     return;
   }
   
-  OBSWebSocket = window.OBSWebSocket;
+  OBSWebSocket = window.electronAPI.OBSWebSocket;
+  console.log('OBSWebSocket class loaded:', typeof OBSWebSocket);
+  
   obs = new OBSWebSocket();
+  console.log('OBSWebSocket instance created:', typeof obs);
+  
   setupEventListeners();
   loadSettings();
   console.log('OBS Remote Control initialized successfully');
@@ -746,4 +754,8 @@ function clearIntervals() {
 }
 
 // Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', init);
+console.log('app.js loaded, waiting for DOMContentLoaded...');
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('DOMContentLoaded event fired!');
+  init();
+});
