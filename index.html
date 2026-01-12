@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBS Remote Control</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header / Connection Bar -->
+    <header class="header">
+      <div class="header-left">
+        <h1><i class="fas fa-broadcast-tower"></i> OBS Remote Control</h1>
+      </div>
+      <div class="header-right">
+        <div class="connection-panel">
+          <input type="text" id="ws-host" placeholder="Host (e.g., localhost)" value="localhost">
+          <input type="text" id="ws-port" placeholder="Port (e.g., 4455)" value="4455">
+          <input type="password" id="ws-password" placeholder="Password (optional)">
+          <button id="connect-btn" class="btn btn-primary">
+            <i class="fas fa-plug"></i> Connect
+          </button>
+          <div class="status-indicator" id="status-indicator">
+            <span class="status-dot disconnected"></span>
+            <span class="status-text">Disconnected</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Left Sidebar - Scenes and Sources -->
+      <aside class="sidebar sidebar-left">
+        <div class="panel">
+          <div class="panel-header">
+            <h2><i class="fas fa-layer-group"></i> Scenes</h2>
+            <button class="btn-icon" title="Refresh"><i class="fas fa-sync"></i></button>
+          </div>
+          <div class="panel-body">
+            <div id="scenes-list" class="list-container">
+              <div class="empty-state">Not connected to OBS</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2><i class="fas fa-cube"></i> Sources</h2>
+          </div>
+          <div class="panel-body">
+            <div id="sources-list" class="list-container">
+              <div class="empty-state">Select a scene</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2><i class="fas fa-exchange-alt"></i> Transitions</h2>
+          </div>
+          <div class="panel-body">
+            <div class="transition-controls">
+              <select id="transition-select" class="select-input">
+                <option value="">Loading...</option>
+              </select>
+              <div class="duration-control">
+                <label>Duration (ms):</label>
+                <input type="number" id="transition-duration" value="300" min="50" max="20000" step="50">
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center - Preview/Program -->
+      <section class="center-content">
+        <div class="studio-mode-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="studio-mode-toggle">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Studio Mode</span>
+          </label>
+        </div>
+
+        <div id="single-preview" class="preview-container single-mode">
+          <div class="preview-panel">
+            <div class="preview-header">
+              <h3>Program Output</h3>
+            </div>
+            <div class="preview-display" id="program-preview">
+              <canvas id="program-canvas"></canvas>
+              <div class="preview-placeholder">
+                <i class="fas fa-video"></i>
+                <p>No preview available</p>
+                <small>Connect to OBS to view output</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="studio-preview" class="preview-container studio-mode" style="display: none;">
+          <div class="preview-panel">
+            <div class="preview-header">
+              <h3>Preview (Studio Mode)</h3>
+            </div>
+            <div class="preview-display" id="studio-preview-display">
+              <canvas id="preview-canvas"></canvas>
+              <div class="preview-placeholder">
+                <i class="fas fa-eye"></i>
+                <p>Preview</p>
+              </div>
+            </div>
+          </div>
+          <div class="preview-panel">
+            <div class="preview-header">
+              <h3>Program (Live)</h3>
+            </div>
+            <div class="preview-display" id="studio-program-display">
+              <canvas id="live-canvas"></canvas>
+              <div class="preview-placeholder">
+                <i class="fas fa-broadcast-tower"></i>
+                <p>Live Output</p>
+              </div>
+            </div>
+          </div>
+          <div class="transition-button-container">
+            <button id="transition-btn" class="btn btn-large btn-warning" disabled>
+              <i class="fas fa-arrow-right"></i> Transition
+            </button>
+          </div>
+        </div>
+
+        <!-- Stream/Recording Controls -->
+        <div class="controls-panel">
+          <div class="control-group">
+            <button id="stream-btn" class="btn btn-success" disabled>
+              <i class="fas fa-circle"></i> Start Streaming
+            </button>
+            <button id="record-btn" class="btn btn-danger" disabled>
+              <i class="fas fa-record-vinyl"></i> Start Recording
+            </button>
+            <button id="pause-record-btn" class="btn btn-secondary" disabled>
+              <i class="fas fa-pause"></i> Pause Recording
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats Display -->
+        <div class="stats-panel">
+          <div class="stat-item">
+            <i class="fas fa-clock"></i>
+            <span class="stat-label">Streaming Time:</span>
+            <span id="stream-time" class="stat-value">--:--:--</span>
+          </div>
+          <div class="stat-item">
+            <i class="fas fa-tachometer-alt"></i>
+            <span class="stat-label">FPS:</span>
+            <span id="fps-value" class="stat-value">--</span>
+          </div>
+          <div class="stat-item">
+            <i class="fas fa-microchip"></i>
+            <span class="stat-label">CPU:</span>
+            <span id="cpu-value" class="stat-value">--%</span>
+          </div>
+          <div class="stat-item">
+            <i class="fas fa-memory"></i>
+            <span class="stat-label">Memory:</span>
+            <span id="memory-value" class="stat-value">-- MB</span>
+          </div>
+          <div class="stat-item">
+            <i class="fas fa-wifi"></i>
+            <span class="stat-label">Bitrate:</span>
+            <span id="bitrate-value" class="stat-value">-- kbps</span>
+          </div>
+          <div class="stat-item">
+            <i class="fas fa-chart-line"></i>
+            <span class="stat-label">Dropped Frames:</span>
+            <span id="dropped-frames" class="stat-value">0 (0%)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Sidebar - Audio Mixer -->
+      <aside class="sidebar sidebar-right">
+        <div class="panel">
+          <div class="panel-header">
+            <h2><i class="fas fa-volume-up"></i> Audio Mixer</h2>
+          </div>
+          <div class="panel-body">
+            <div id="audio-mixer" class="audio-mixer">
+              <div class="empty-state">No audio sources available</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2><i class="fas fa-folder-open"></i> Recordings</h2>
+            <button class="btn-icon" id="refresh-recordings" title="Refresh">
+              <i class="fas fa-sync"></i>
+            </button>
+          </div>
+          <div class="panel-body">
+            <div id="recordings-list" class="recordings-list">
+              <div class="empty-state">No recordings found</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/obs-websocket-js@5.0.5/dist/obs-ws.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
