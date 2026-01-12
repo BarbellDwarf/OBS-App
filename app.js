@@ -143,32 +143,30 @@ async function disconnect() {
     if (obs && isConnected) {
       await obs.disconnect();
     }
-    isConnected = false;
-    updateConnectionStatus('disconnected', 'Disconnected');
-    elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
-    elements.connectBtn.classList.remove('btn-danger');
-    elements.connectBtn.classList.add('btn-primary');
-    elements.connectBtn.disabled = false;
-    clearIntervals();
-    resetUI();
+    resetConnectionUI();
     console.log('Disconnected successfully');
   } catch (error) {
     console.error('Disconnect error:', error);
     // Still reset UI even if disconnect fails
-    isConnected = false;
-    updateConnectionStatus('disconnected', 'Disconnected');
-    elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
-    elements.connectBtn.classList.remove('btn-danger');
-    elements.connectBtn.classList.add('btn-primary');
-    elements.connectBtn.disabled = false;
-    clearIntervals();
-    resetUI();
+    resetConnectionUI();
   }
 }
 
 function updateConnectionStatus(status, text) {
   elements.statusDot.className = `status-dot ${status}`;
   elements.statusText.textContent = text;
+}
+
+// Reset connection UI to disconnected state
+function resetConnectionUI() {
+  isConnected = false;
+  updateConnectionStatus('disconnected', 'Disconnected');
+  elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
+  elements.connectBtn.classList.remove('btn-danger');
+  elements.connectBtn.classList.add('btn-primary');
+  elements.connectBtn.disabled = false;
+  clearIntervals();
+  resetUI();
 }
 
 // Initialize OBS connection
@@ -201,19 +199,12 @@ function setupOBSEventListeners() {
   // Connection events
   obs.on('ConnectionClosed', () => {
     console.log('Connection to OBS closed');
-    isConnected = false;
-    updateConnectionStatus('disconnected', 'Disconnected');
-    elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
-    elements.connectBtn.classList.remove('btn-danger');
-    elements.connectBtn.classList.add('btn-primary');
-    elements.connectBtn.disabled = false;
-    clearIntervals();
-    resetUI();
+    resetConnectionUI();
   });
   
   obs.on('ConnectionError', (error) => {
     console.error('Connection error:', error);
-    updateConnectionStatus('disconnected', 'Connection Error');
+    resetConnectionUI();
     alert('Lost connection to OBS: ' + (error.message || 'Unknown error'));
   });
   
