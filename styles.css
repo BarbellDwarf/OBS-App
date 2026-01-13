@@ -393,6 +393,108 @@ body {
   transition: transform var(--transition-speed);
 }
 
+.toggle-switch input[type="checkbox"]:checked + .toggle-slider {
+  background-color: var(--primary-color);
+}
+
+.toggle-switch input[type="checkbox"]:checked + .toggle-slider::before {
+  transform: translateX(24px);
+}
+
+.toggle-label {
+  font-weight: 500;
+  user-select: none;
+}
+
+/* Studio Mode Scene Indicators */
+.studio-mode-indicators {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 16px;
+  background-color: var(--dark-bg);
+  border-radius: 8px;
+  margin: 0 16px 16px 16px;
+}
+
+.scene-indicator {
+  flex: 1;
+  padding: 12px;
+  border-radius: 6px;
+  text-align: center;
+  min-width: 150px;
+}
+
+.program-indicator {
+  background-color: rgba(40, 167, 69, 0.15);
+  border: 2px solid var(--success-color);
+}
+
+.preview-indicator {
+  background-color: rgba(0, 132, 255, 0.15);
+  border: 2px solid var(--primary-color);
+}
+
+.indicator-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  opacity: 0.8;
+}
+
+.program-indicator .indicator-label {
+  color: var(--success-color);
+}
+
+.preview-indicator .indicator-label {
+  color: var(--primary-color);
+}
+
+.indicator-scene {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transition-arrow {
+  font-size: 24px;
+  color: var(--warning-color);
+  display: flex;
+  align-items: center;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}
+  transition: background-color var(--transition-speed);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: white;
+  top: 3px;
+  left: 3px;
+  transition: transform var(--transition-speed);
+}
+
 .toggle-switch input:checked + .toggle-slider {
   background-color: var(--primary-color);
 }

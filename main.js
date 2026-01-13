@@ -112,6 +112,7 @@ function setupOBSEventForwarding() {
     'ConnectionClosed',
     'ConnectionError', 
     'CurrentProgramSceneChanged',
+    'CurrentPreviewSceneChanged',  // Studio mode preview scene changes
     'SceneListChanged',
     'StreamStateChanged',
     'RecordStateChanged',

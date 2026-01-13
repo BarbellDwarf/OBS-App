@@ -467,10 +467,25 @@ function setupOBSEventListeners() {
   obs.on('CurrentProgramSceneChanged', (data) => {
     currentScene = data.sceneName;
     updateActiveScene();
+    // Update studio mode indicators if in studio mode
+    if (isStudioMode) {
+      updateSceneIndicators();
+    }
   });
   
   obs.on('SceneListChanged', () => {
     loadScenes();
+    // Update studio mode indicators if in studio mode
+    if (isStudioMode) {
+      updateSceneIndicators();
+    }
+  });
+  
+  // Preview scene changed event (studio mode)
+  obs.on('CurrentPreviewSceneChanged', (data) => {
+    if (isStudioMode) {
+      updateSceneIndicators();
+    }
   });
   
   // Stream events
@@ -491,11 +506,16 @@ function setupOBSEventListeners() {
   
   // Audio level events (OBS WebSocket 5.x feature)
   obs.on('InputVolumeMeters', (data) => {
+    console.log('[InputVolumeMeters] Event received:', data ? 'YES' : 'NO');
     // data.inputs is an array of {inputName, inputLevelsMul: [[channels], [channels], ...]}
     if (data && data.inputs) {
+      console.log(`[InputVolumeMeters] Processing ${data.inputs.length} inputs`);
       data.inputs.forEach(input => {
+        console.log(`[InputVolumeMeters] Input: ${input.inputName}, Levels:`, input.inputLevelsMul);
         updateAudioMeter(input.inputName, input.inputLevelsMul);
       });
+    } else {
+      console.warn('[InputVolumeMeters] No data or inputs in event');
     }
   });
 }
@@ -503,15 +523,26 @@ function setupOBSEventListeners() {
 // Update audio meter with real OBS audio levels
 function updateAudioMeter(inputName, levelsMul) {
   const meter = document.querySelector(`.audio-meter[data-input="${inputName}"]`);
-  if (!meter) return;
+  console.log(`[updateAudioMeter] Looking for meter with input="${inputName}", Found:`, meter ? 'YES' : 'NO');
+  
+  if (!meter) {
+    console.warn(`[updateAudioMeter] No meter element found for input "${inputName}"`);
+    return;
+  }
   
   const bars = meter.querySelectorAll('.meter-bar');
-  if (bars.length === 0) return;
+  console.log(`[updateAudioMeter] Found ${bars.length} meter bars for "${inputName}"`);
+  
+  if (bars.length === 0) {
+    console.warn(`[updateAudioMeter] No meter bars found in meter for "${inputName}"`);
+    return;
+  }
   
   // levelsMul is an array of channel arrays: [[ch1_levels], [ch2_levels], ...]
   // Each channel has 3 values: [magnitude, peak, inputLevel]
   // We'll use the magnitude (index 0) from the first channel
   if (!levelsMul || levelsMul.length === 0) {
+    console.log(`[updateAudioMeter] No level data for "${inputName}", clearing meter`);
     // No audio data - clear meter
     bars.forEach(bar => bar.classList.remove('active', 'peak'));
     return;
@@ -519,10 +550,12 @@ function updateAudioMeter(inputName, levelsMul) {
   
   // Get magnitude from first channel (mono or left channel)
   const magnitude = levelsMul[0][0]; // Range: 0.0 to 1.0
+  console.log(`[updateAudioMeter] "${inputName}" magnitude: ${magnitude.toFixed(3)}`);
   
   // Convert to number of bars to light up (out of total bars)
   const totalBars = bars.length;
   const activeCount = Math.round(magnitude * totalBars);
+  console.log(`[updateAudioMeter] "${inputName}" lighting ${activeCount}/${totalBars} bars`);
   
   // Update meter bars
   bars.forEach((bar, index) => {
@@ -917,21 +950,64 @@ async function toggleStudioMode() {
   }
 }
 
-function updateStudioModeUI() {
+async function updateStudioModeUI() {
   if (isStudioMode) {
     if (elements.singlePreview) elements.singlePreview.style.display = 'none';
     if (elements.studioPreview) elements.studioPreview.style.display = 'flex';
     if (elements.transitionBtn) elements.transitionBtn.disabled = false;
+    
+    // Show studio mode indicators
+    const indicators = document.getElementById('studio-mode-indicators');
+    if (indicators) {
+      indicators.style.display = 'flex';
+      await updateSceneIndicators();
+    }
   } else {
     if (elements.singlePreview) elements.singlePreview.style.display = 'flex';
     if (elements.studioPreview) elements.studioPreview.style.display = 'none';
     if (elements.transitionBtn) elements.transitionBtn.disabled = true;
+    
+    // Hide studio mode indicators
+    const indicators = document.getElementById('studio-mode-indicators');
+    if (indicators) {
+      indicators.style.display = 'none';
+    }
+  }
+}
+
+async function updateSceneIndicators() {
+  if (!isStudioMode || !isConnected) return;
+  
+  try {
+    // Get current program scene
+    const { currentProgramSceneName } = await obs.call('GetSceneList');
+    const programSceneEl = document.getElementById('program-scene-name');
+    if (programSceneEl) {
+      programSceneEl.textContent = currentProgramSceneName || 'No Scene';
+    }
+    
+    // Get current preview scene (studio mode only)
+    const { currentPreviewSceneName } = await obs.call('GetCurrentPreviewScene');
+    const previewSceneEl = document.getElementById('preview-scene-name');
+    if (previewSceneEl) {
+      previewSceneEl.textContent = currentPreviewSceneName || 'No Scene';
+    }
+    
+    console.log(`[Studio Mode] Program: ${currentProgramSceneName}, Preview: ${currentPreviewSceneName}`);
+  } catch (error) {
+    console.error('Failed to update scene indicators:', error);
   }
 }
 
 async function performTransition() {
   try {
     await obs.call('TriggerStudioModeTransition');
+    // Update indicators after transition
+    setTimeout(() => {
+      if (isStudioMode) {
+        updateSceneIndicators();
+      }
+    }, 100);
   } catch (error) {
     console.error('Failed to perform transition:', error);
   }
