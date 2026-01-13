@@ -57,6 +57,7 @@ let statsInterval = null;
 let audioLevelIntervals = {};
 let syncInterval = null; // For bidirectional sync
 let isUserInteractingWithTransition = false; // Prevent sync from overwriting user changes
+let sceneHotkeyOrder = []; // Ordered list of scenes for number hotkeys
 
 // DOM Elements - with null checks for missing elements
 const elements = {
@@ -160,6 +161,77 @@ function setupEventListeners() {
   if (elements.deleteConnectionBtn) elements.deleteConnectionBtn.addEventListener('click', deleteCurrentConnection);
   if (elements.refreshCollections) elements.refreshCollections.addEventListener('click', loadSceneCollections);
   if (elements.refreshProfiles) elements.refreshProfiles.addEventListener('click', loadProfiles);
+  
+  document.addEventListener('keydown', handleHotkey);
+}
+
+function isTypingInInput(target) {
+  if (!target) return false;
+  
+  const tagName = target.tagName;
+  
+  const inputTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+  
+  return target.isContentEditable ||
+    inputTags.includes(tagName);
+}
+
+function normalizeSceneNumber(value) {
+  const number = parseInt(value, 10);
+  return number >= 1 && number <= 9 ? number - 1 : null;
+}
+
+function getSceneIndexFromEvent(code, key) {
+  // Prefer physical key codes but fall back to key for environments that don't provide event.code
+  const codeMatch = code && code.match(/^(?:Digit|Numpad)(\d)$/);
+  if (codeMatch) {
+    const index = normalizeSceneNumber(codeMatch[1]);
+    if (index !== null) return index;
+  }
+  
+  if (key >= '1' && key <= '9') {
+    return normalizeSceneNumber(key);
+  }
+  
+  return null;
+}
+
+async function handleHotkey(event) {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (!isConnected || !obs) return;
+  
+  // Ignore when typing in inputs
+  if (isTypingInInput(event.target)) return;
+  
+  const isCtrlOrCmd = event.ctrlKey || event.metaKey;
+  if (!isCtrlOrCmd) return;
+  
+  const key = event.key.toLowerCase();
+  const code = event.code;
+  const sceneIndex = getSceneIndexFromEvent(code, key);
+  
+  // Scene selection with Ctrl/Cmd + 1-9
+  if (sceneIndex !== null && sceneIndex < sceneHotkeyOrder.length) {
+    const sceneName = sceneHotkeyOrder[sceneIndex];
+    if (sceneName) {
+      event.preventDefault();
+      await setScene(sceneName);
+    }
+    return;
+  }
+  
+  // Streaming toggle Ctrl/Cmd + S
+  if (key === 's') {
+    event.preventDefault();
+    await toggleStreaming();
+    return;
+  }
+  
+  // Recording toggle Ctrl/Cmd + R
+  if (key === 'r') {
+    event.preventDefault();
+    await toggleRecording();
+  }
 }
 
 // Connection Management Functions
@@ -615,7 +687,11 @@ async function loadScenes() {
     currentScene = currentProgramSceneName;
     
     elements.scenesList.innerHTML = '';
-    scenes.reverse().forEach(scene => {
+    // Reverse once and reuse for both rendering order and hotkey mapping
+    const orderedScenes = [...scenes].reverse();
+    sceneHotkeyOrder = orderedScenes.map(scene => scene.sceneName);
+    
+    orderedScenes.forEach(scene => {
       const sceneItem = createSceneItem(scene.sceneName);
       elements.scenesList.appendChild(sceneItem);
     });
@@ -1363,6 +1439,9 @@ function resetUI() {
   
   elements.studioModeToggle.checked = false;
   updateStudioModeUI();
+  
+  // Clear cached scene order for hotkeys
+  sceneHotkeyOrder = [];
 }
 
 function clearIntervals() {

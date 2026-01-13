@@ -148,10 +148,10 @@ Built applications will be in the `dist/` directory.
 
 ## Keyboard Shortcuts
 
-_(Can be implemented in future versions)_
-- `Ctrl/Cmd + 1-9`: Switch to scene 1-9
-- `Ctrl/Cmd + S`: Toggle streaming
-- `Ctrl/Cmd + R`: Toggle recording
+- `Ctrl/Cmd + 1-9`: Switch scenes (uses the visible order in the scenes list)
+- `Ctrl/Cmd + S`: Start/stop streaming
+- `Ctrl/Cmd + R`: Start/stop recording
+- Shortcuts require an active OBS connection and are ignored while typing in inputs.
 
 ## Troubleshooting
 
@@ -278,4 +278,3 @@ For issues and questions:
 ---
 
 Made with ❤️ for the OBS community
-
