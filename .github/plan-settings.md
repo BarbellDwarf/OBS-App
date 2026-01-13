@@ -1,16 +1,8 @@
-# Plan settings
-
-## When to skip a plan
-- The user explicitly asks not to create a plan.
-- The task is a small, single-step change (for example: a minor typo/doc fix or updating one value) and you are confident it does not need coordination across files.
-
-## When to share a plan
-- The work spans multiple steps, files, or design decisions.
-- You need to investigate failures or reproduce an issue before fixing it.
-- Anything that would benefit from outlining validations or tests ahead of execution.
-
-## How to structure the plan
-- Keep the plan concise (about 3–6 bullet points), with no nested lists.
-- Capture high-level steps only; avoid detailed commands or code.
-- Include a validation/test step when applicable.
-- If the approach changes materially, update the plan and call it out.
+# Plan: Settings / Preferences Panel
+- **Goal**: Centralize user-configurable options (polling/theme/auto-reconnect/db range/stats frequency, default connection, shortcuts map).
+- **Dependencies**: Local storage schema versioning; IPC bridge for persistent settings; existing settings load/save helpers.
+- **Steps**:
+  1. Define settings schema with defaults and validation (poll intervals, dB min/max, stats freq, theme/accent palette, auto-reconnect toggle, default connection id, keyboard shortcut map).
+  2. Build settings UI (modal/drawer) to edit values; persist to localStorage; live-apply CSS vars for theme and reinitialize timers and meter ranges on change.
+  3. Wire auto-reconnect and default connection into connection lifecycle; expose reconnect delay/jitter.
+  4. Add shortcut editor that writes to shortcut map; provide reset-to-defaults and import/export JSON.
