@@ -5,7 +5,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 
 ## Goals
 - Provide immediate, clear feedback for critical actions (connect/disconnect, start/stop stream or recording, failures).
-- Surface health issues early (dropped frames/bitrate-drops, high CPU) with gentle warnings.
+- Surface health issues early (dropped frames or bitrate drops, high CPU) with gentle warnings.
 - Respect user focus by allowing optional desktop/system notifications when the window is unfocused.
 - Keep implementation lightweight and consistent with the existing dark UI style.
 
@@ -32,7 +32,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 ## Settings & Controls
 - Toggle: “Show in-app notifications” (on by default).
 - Toggle: “Allow desktop notifications when unfocused” (off by default; gated behind Notification permission prompt).
-- Toggle thresholds for health alerts (dropped frames %, bitrate kbps floor, CPU %).
+- Configure thresholds for health alerts (dropped frames %, bitrate kbps floor, CPU %).
 - Clear all notifications control (in-app only).
 
 ## Technical Approach
@@ -43,7 +43,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 - Wire OBS WebSocket events in `app.js` to the manager:
   - Connection/identification handlers → success/error toasts.
   - `StreamStateChanged`, `RecordStateChanged`, `SceneTransitionVideoEnded`, `CurrentProgramSceneChanged`, and health polling → mapped notifications.
-- Respect context isolation by relying on contextBridge-exposed helpers and browser Notifications (avoiding direct Node primitives in the renderer); deeper wiring details can live in the technical spec.
+- Respect context isolation by relying on contextBridge-exposed helpers and browser Notifications, avoiding direct Node primitives in the renderer. Deeper wiring details can live in the technical spec.
 - Add permission request flow for system notifications with graceful fallback to in-app toasts.
 
 ## Acceptance Criteria
