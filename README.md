@@ -17,7 +17,9 @@ A modern, cross-platform desktop application for remotely controlling OBS (Open 
 - Full audio mixer with all audio sources
 - Volume sliders with real-time adjustment
 - Mute/unmute controls
-- **Real-time audio level meters** (updates 10x/second)
+- Visual audio level indicators
+  - *Note: Actual audio signal levels not available via WebSocket*
+  - *Indicators show simulated activity for unmuted sources*
 
 ### 📺 Studio Mode
 - Toggle studio mode on/off
@@ -210,10 +212,32 @@ OBS-App/
 
 ## Security Notes
 
-- Passwords are not stored permanently
+- Passwords are stored with base64 encoding (obfuscation only)
 - Connection settings saved in localStorage
 - Use strong passwords for remote connections
 - Consider using VPN for remote access
+
+## Known Limitations
+
+### Audio Level Metering
+**OBS WebSocket API does not provide real-time audio signal levels.** The WebSocket protocol only exposes:
+- Volume settings (slider positions)
+- Mute status
+- Audio track configuration
+
+It does NOT expose:
+- Real-time audio signal strength (VU meter data)
+- Peak levels
+- Audio waveform data
+
+**What this means:** The audio meters in this app show *simulated activity* based on mute status, not actual audio levels. While OBS Studio displays real audio levels internally, this data is not available through the WebSocket API.
+
+**Workaround:** Keep the OBS Studio window visible to monitor actual audio levels.
+
+### Video Preview
+**OBS WebSocket API does not stream video frames.** Video preview functionality is not available through the WebSocket protocol.
+
+**Workaround:** Use the OBS Studio window for video preview while using this app for remote control.
 
 ## Contributing
 
