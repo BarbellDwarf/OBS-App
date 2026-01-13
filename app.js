@@ -49,8 +49,9 @@ let isStudioMode = false;
 let currentScene = null;
 let statsInterval = null;
 let audioLevelIntervals = {};
+let syncInterval = null; // For bidirectional sync
 
-// DOM Elements
+// DOM Elements - with null checks for missing elements
 const elements = {
   wsHost: document.getElementById('ws-host'),
   wsPort: document.getElementById('ws-port'),
@@ -68,7 +69,7 @@ const elements = {
   studioModeToggle: document.getElementById('studio-mode-toggle'),
   singlePreview: document.getElementById('single-preview'),
   studioPreview: document.getElementById('studio-preview'),
-  transitionBtn: document.getElementById('transition-btn'),
+  transitionBtn: document.getElementById('transition-btn'), // May be null (commented out in HTML)
   transitionSelect: document.getElementById('transition-select'),
   transitionDuration: document.getElementById('transition-duration'),
   streamTime: document.getElementById('stream-time'),
@@ -127,19 +128,19 @@ async function init() {
   }
 }
 
-// Setup event listeners
+// Setup event listeners with null checks
 function setupEventListeners() {
-  elements.connectBtn.addEventListener('click', handleConnect);
-  elements.streamBtn.addEventListener('click', toggleStreaming);
-  elements.recordBtn.addEventListener('click', toggleRecording);
-  elements.pauseRecordBtn.addEventListener('click', pauseRecording);
-  elements.studioModeToggle.addEventListener('change', toggleStudioMode);
-  elements.transitionBtn.addEventListener('click', performTransition);
-  elements.transitionSelect.addEventListener('change', setCurrentTransition);
-  elements.refreshRecordings.addEventListener('click', loadRecordings);
-  elements.savedConnections.addEventListener('change', loadSavedConnection);
-  elements.saveConnectionBtn.addEventListener('click', saveCurrentConnection);
-  elements.deleteConnectionBtn.addEventListener('click', deleteCurrentConnection);
+  if (elements.connectBtn) elements.connectBtn.addEventListener('click', handleConnect);
+  if (elements.streamBtn) elements.streamBtn.addEventListener('click', toggleStreaming);
+  if (elements.recordBtn) elements.recordBtn.addEventListener('click', toggleRecording);
+  if (elements.pauseRecordBtn) elements.pauseRecordBtn.addEventListener('click', pauseRecording);
+  if (elements.studioModeToggle) elements.studioModeToggle.addEventListener('change', toggleStudioMode);
+  if (elements.transitionBtn) elements.transitionBtn.addEventListener('click', performTransition);
+  if (elements.transitionSelect) elements.transitionSelect.addEventListener('change', setCurrentTransition);
+  if (elements.refreshRecordings) elements.refreshRecordings.addEventListener('click', loadRecordings);
+  if (elements.savedConnections) elements.savedConnections.addEventListener('change', loadSavedConnection);
+  if (elements.saveConnectionBtn) elements.saveConnectionBtn.addEventListener('click', saveCurrentConnection);
+  if (elements.deleteConnectionBtn) elements.deleteConnectionBtn.addEventListener('click', deleteCurrentConnection);
 }
 
 // Connection Management Functions
@@ -378,6 +379,9 @@ async function initializeOBSConnection() {
     
     // Start stats polling
     startStatsPolling();
+    
+    // Start bidirectional sync polling
+    startBidirectionalSync();
     
     // Enable controls
     enableControls();
@@ -847,13 +851,13 @@ async function toggleStudioMode() {
 
 function updateStudioModeUI() {
   if (isStudioMode) {
-    elements.singlePreview.style.display = 'none';
-    elements.studioPreview.style.display = 'flex';
-    elements.transitionBtn.disabled = false;
+    if (elements.singlePreview) elements.singlePreview.style.display = 'none';
+    if (elements.studioPreview) elements.studioPreview.style.display = 'flex';
+    if (elements.transitionBtn) elements.transitionBtn.disabled = false;
   } else {
-    elements.singlePreview.style.display = 'flex';
-    elements.studioPreview.style.display = 'none';
-    elements.transitionBtn.disabled = true;
+    if (elements.singlePreview) elements.singlePreview.style.display = 'flex';
+    if (elements.studioPreview) elements.studioPreview.style.display = 'none';
+    if (elements.transitionBtn) elements.transitionBtn.disabled = true;
   }
 }
 
@@ -1002,8 +1006,102 @@ function clearIntervals() {
     statsInterval = null;
   }
   
+  if (syncInterval) {
+    clearInterval(syncInterval);
+    syncInterval = null;
+  }
+  
   Object.values(audioLevelIntervals).forEach(interval => clearInterval(interval));
   audioLevelIntervals = {};
+}
+
+// Bidirectional sync - poll OBS for state changes
+function startBidirectionalSync() {
+  if (syncInterval) clearInterval(syncInterval);
+  
+  syncInterval = setInterval(async () => {
+    if (!isConnected || !obs) return;
+    
+    try {
+      // Sync audio volume sliders and mute buttons
+      const audioChannels = document.querySelectorAll('.audio-channel');
+      for (const channel of audioChannels) {
+        const inputName = channel.querySelector('.volume-slider')?.dataset.input;
+        if (!inputName) continue;
+        
+        try {
+          // Get current volume from OBS
+          const { inputVolumeDb } = await obs.call('GetInputVolume', { inputName });
+          const percent = dbToPercent(inputVolumeDb);
+          
+          // Update slider if not currently being dragged
+          const slider = channel.querySelector('.volume-slider');
+          const volumeValue = channel.querySelector('.volume-value');
+          if (slider && document.activeElement !== slider) {
+            slider.value = percent;
+            if (volumeValue) volumeValue.textContent = `${Math.round(percent)}%`;
+          }
+          
+          // Update mute button
+          const { inputMuted } = await obs.call('GetInputMute', { inputName });
+          const muteBtn = channel.querySelector('.mute-btn');
+          if (muteBtn) {
+            if (inputMuted) {
+              muteBtn.classList.add('muted');
+              muteBtn.querySelector('i').className = 'fas fa-volume-mute';
+            } else {
+              muteBtn.classList.remove('muted');
+              muteBtn.querySelector('i').className = 'fas fa-volume-up';
+            }
+          }
+        } catch (e) {
+          // Source may have been removed
+        }
+      }
+      
+      // Sync studio mode toggle
+      if (elements.studioModeToggle) {
+        const { studioModeEnabled } = await obs.call('GetStudioModeEnabled');
+        if (elements.studioModeToggle.checked !== studioModeEnabled) {
+          isStudioMode = studioModeEnabled;
+          elements.studioModeToggle.checked = studioModeEnabled;
+          updateStudioModeUI();
+        }
+      }
+      
+      // Sync streaming status
+      const { outputActive: streamActive } = await obs.call('GetStreamStatus');
+      const isStreamButtonActive = elements.streamBtn && elements.streamBtn.textContent.includes('Stop');
+      if (streamActive !== isStreamButtonActive) {
+        updateStreamButton(streamActive);
+      }
+      
+      // Sync recording status
+      const { outputActive: recordActive } = await obs.call('GetRecordStatus');
+      const isRecordButtonActive = elements.recordBtn && elements.recordBtn.textContent.includes('Stop');
+      if (recordActive !== isRecordButtonActive) {
+        updateRecordButton(recordActive);
+      }
+      
+      // Sync transition selection
+      if (elements.transitionSelect) {
+        const { currentSceneTransitionName } = await obs.call('GetCurrentSceneTransition');
+        if (elements.transitionSelect.value !== currentSceneTransitionName) {
+          elements.transitionSelect.value = currentSceneTransitionName;
+        }
+        
+        // Sync transition duration
+        const { transitionDuration } = await obs.call('GetCurrentSceneTransition');
+        if (elements.transitionDuration && elements.transitionDuration.value != transitionDuration) {
+          elements.transitionDuration.value = transitionDuration;
+        }
+      }
+      
+    } catch (error) {
+      console.error('Bidirectional sync error:', error);
+      // Don't spam errors if connection is lost
+    }
+  }, 1000); // Poll every second
 }
 
 // Initialize app when DOM is ready
