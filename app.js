@@ -250,6 +250,7 @@ function collectSettingsFromUI() {
   if (Number.isNaN(maxDb)) maxDb = DEFAULT_SETTINGS.maxDb;
   if (minDb >= maxDb) {
     maxDb = minDb + 1;
+    alert('Meter range adjusted: max dB must be greater than min dB.');
   }
   next.statsIntervalMs = Math.max(500, statsInterval || DEFAULT_SETTINGS.statsIntervalMs);
   next.syncIntervalMs = Math.max(500, syncInterval || DEFAULT_SETTINGS.syncIntervalMs);
@@ -317,7 +318,7 @@ function parseShortcutJsonTextarea() {
     const parsed = JSON.parse(elements.shortcutJson.value);
     return parsed;
   } catch (e) {
-    alert('Invalid JSON for shortcuts.');
+    alert('Invalid JSON for shortcuts. Expect an object like {"toggleStream": "Ctrl+Shift+S"}. Error: ' + e.message);
     return null;
   }
 }
@@ -759,7 +760,7 @@ async function connect(connectionOpts = null) {
 
     const host = connectionOpts?.host || elements.wsHost.value || 'localhost';
     const port = connectionOpts?.port || elements.wsPort.value || '4455';
-    const password = connectionOpts?.password ?? (elements.wsPassword.value || '');
+    const password = connectionOpts?.password || elements.wsPassword.value || '';
 
     lastConnectionDetails = { host, port, password };
     elements.wsHost.value = host;
