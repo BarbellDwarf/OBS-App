@@ -92,11 +92,11 @@
               <h3>Program Output</h3>
             </div>
             <div class="preview-display" id="program-preview">
-              <canvas id="program-canvas"></canvas>
+              <canvas id="program-canvas" style="display: none;"></canvas>
               <div class="preview-placeholder">
                 <i class="fas fa-video"></i>
-                <p>No preview available</p>
-                <small>Connect to OBS to view output</small>
+                <p>Video Preview Not Available</p>
+                <small>OBS WebSocket doesn't stream video frames.<br>Use OBS Studio window for video preview.</small>
               </div>
             </div>
           </div>
@@ -108,10 +108,11 @@
               <h3>Preview (Studio Mode)</h3>
             </div>
             <div class="preview-display" id="studio-preview-display">
-              <canvas id="preview-canvas"></canvas>
+              <canvas id="preview-canvas" style="display: none;"></canvas>
               <div class="preview-placeholder">
                 <i class="fas fa-eye"></i>
                 <p>Preview</p>
+                <small>Video preview not available via WebSocket</small>
               </div>
             </div>
           </div>
@@ -120,10 +121,11 @@
               <h3>Program (Live)</h3>
             </div>
             <div class="preview-display" id="studio-program-display">
-              <canvas id="live-canvas"></canvas>
+              <canvas id="live-canvas" style="display: none;"></canvas>
               <div class="preview-placeholder">
                 <i class="fas fa-broadcast-tower"></i>
                 <p>Live Output</p>
+                <small>Video preview not available via WebSocket</small>
               </div>
             </div>
           </div>

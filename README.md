@@ -17,13 +17,14 @@ A modern, cross-platform desktop application for remotely controlling OBS (Open 
 - Full audio mixer with all audio sources
 - Volume sliders with real-time adjustment
 - Mute/unmute controls
-- Visual audio level meters
+- **Real-time audio level meters** (updates 10x/second)
 
 ### 📺 Studio Mode
 - Toggle studio mode on/off
-- Separate preview and program displays
+- Scene preview and program organization
 - Scene transition controls
 - Custom transition selection and duration
+- *Note: Video preview not available (WebSocket limitation)*
 
 ### 🔴 Stream & Recording Controls
 - Start/stop streaming
@@ -157,15 +158,17 @@ _(Can be implemented in future versions)_
 - Check firewall settings if connecting remotely
 - Verify password is correct
 
-### Audio Sources Not Showing
-- Ensure audio sources are added in OBS
-- Try refreshing the connection
-- Check that sources are not muted in OBS itself
+### Audio Levels Not Showing
+- Audio level meters now display real-time volume based on OBS input volume
+- Meters update 10 times per second for smooth visualization
+- If meters aren't updating, check that audio sources are active in OBS
 
 ### Preview Not Updating
-- OBS WebSocket 5.x does not stream video frames by default
-- Preview placeholders are shown instead
-- This is a limitation of the WebSocket protocol
+- **Video Preview Limitation**: OBS WebSocket 5.x does not stream video frames
+- Preview panels show placeholder text instead of actual video
+- To view video output, use the OBS Studio window itself
+- This is a protocol limitation, not an app issue
+- Audio levels, scene switching, and all controls still work normally
 
 ### Build Errors
 - Ensure Node.js version is 16 or newer

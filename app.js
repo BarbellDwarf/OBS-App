@@ -514,28 +514,43 @@ function percentToDb(percent) {
 }
 
 function startAudioLevelMonitoring(inputName) {
-  // Note: OBS WebSocket 5.x doesn't provide direct audio level events
-  // This is a placeholder for visual feedback
-  // In a production app, you might need to implement this differently
+  // OBS WebSocket 5.x provides InputVolumeMeters event for real-time audio levels
   const meter = document.querySelector(`.audio-meter[data-input="${inputName}"]`);
   if (!meter) return;
   
-  audioLevelIntervals[inputName] = setInterval(() => {
-    const bars = meter.querySelectorAll('.meter-bar');
-    const activeCount = Math.floor(Math.random() * bars.length);
-    bars.forEach((bar, index) => {
-      if (index < activeCount) {
-        bar.classList.add('active');
-        if (index > bars.length * 0.8) {
-          bar.classList.add('peak');
+  // Poll audio levels periodically
+  audioLevelIntervals[inputName] = setInterval(async () => {
+    try {
+      // Get input volume meters
+      const response = await obs.call('GetInputVolume', { inputName });
+      const volumeDb = response.inputVolumeDb;
+      
+      // Convert dB to percentage for visualization (roughly -60dB to 0dB range)
+      // -60dB or lower = 0%, 0dB = 100%
+      const percentage = Math.max(0, Math.min(100, ((volumeDb + 60) / 60) * 100));
+      
+      const bars = meter.querySelectorAll('.meter-bar');
+      const activeCount = Math.floor((percentage / 100) * bars.length);
+      
+      bars.forEach((bar, index) => {
+        if (index < activeCount) {
+          bar.classList.add('active');
+          // Red peak indicators for levels above 80%
+          if (index > bars.length * 0.8) {
+            bar.classList.add('peak');
+          } else {
+            bar.classList.remove('peak');
+          }
         } else {
-          bar.classList.remove('peak');
+          bar.classList.remove('active', 'peak');
         }
-      } else {
-        bar.classList.remove('active', 'peak');
-      }
-    });
-  }, 100);
+      });
+    } catch (error) {
+      // If we can't get the volume, clear the meter
+      const bars = meter.querySelectorAll('.meter-bar');
+      bars.forEach(bar => bar.classList.remove('active', 'peak'));
+    }
+  }, 100); // Update 10 times per second for smooth animation
 }
 
 // Streaming
