@@ -5,7 +5,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 
 ## Goals
 - Provide immediate, clear feedback for critical actions (connect/disconnect, start/stop stream or recording, failures).
-- Surface health issues early (dropped frames/bitrate drops, high CPU) with gentle warnings.
+- Surface health issues early (dropped frames/bitrate-drops, high CPU) with gentle warnings.
 - Respect user focus by allowing optional desktop/system notifications when the window is unfocused.
 - Keep implementation lightweight and consistent with the existing dark UI style.
 
@@ -19,7 +19,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 - Streaming: start/stop success, failure to start/stop, warning when streaming is active while recording is off (informational).
 - Recording: start/stop/pause/resume success, failure to start/stop, disk-space/permission failure message.
 - Scene/transition: scene switch confirmation, transition triggered, transition failure.
-- Health: dropped frames > threshold, bitrate < threshold, CPU > threshold; only once per 30s unless the state clears.
+- Health: dropped frames > threshold, bitrate < threshold, CPU > threshold (defaults: 2% dropped frames, <2500 kbps bitrate, >85% CPU); only once per 30s unless the state clears.
 - Settings: connection details saved/cleared.
 
 ## Delivery & UX Rules
@@ -43,7 +43,7 @@ Create a concise, non-intrusive notification experience that keeps users aware o
 - Wire OBS WebSocket events in `app.js` to the manager:
   - Connection/identification handlers → success/error toasts.
   - `StreamStateChanged`, `RecordStateChanged`, `SceneTransitionVideoEnded`, `CurrentProgramSceneChanged`, and health polling → mapped notifications.
-- Respect context isolation: surface notifications from preload-safe APIs only (contextBridge-exposed helpers and browser Notifications, not direct Node primitives in the renderer).
+- Respect context isolation by relying on contextBridge-exposed helpers and browser Notifications (avoiding direct Node primitives in the renderer); deeper wiring details can live in the technical spec.
 - Add permission request flow for system notifications with graceful fallback to in-app toasts.
 
 ## Acceptance Criteria
