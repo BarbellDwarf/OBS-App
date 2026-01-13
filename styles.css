@@ -800,33 +800,6 @@ body {
   border-color: var(--primary-color);
 }
 
-/* Recordings */
-.recordings-list {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.recording-item {
-  padding: 10px 12px;
-  background-color: var(--dark-bg);
-  border-radius: 4px;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-
-.recording-name {
-  font-weight: 500;
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.recording-info {
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
 /* Scrollbar Styles */
 ::-webkit-scrollbar {
   width: 10px;
@@ -1137,11 +1110,6 @@ body {
 @keyframes blink {
   0%, 50%, 100% { opacity: 1; }
   25%, 75% { opacity: 0.3; }
-}
-
-.recording-indicator {
-  background-color: var(--warning-color);
-  color: #000;
 }
 
 /* Connection Selector */
