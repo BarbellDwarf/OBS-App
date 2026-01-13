@@ -115,7 +115,8 @@ function setupOBSEventForwarding() {
     'SceneListChanged',
     'StreamStateChanged',
     'RecordStateChanged',
-    'StudioModeStateChanged'
+    'StudioModeStateChanged',
+    'InputVolumeMeters'  // High-volume event for real-time audio level monitoring
   ];
   
   events.forEach(eventName => {
