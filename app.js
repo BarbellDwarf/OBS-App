@@ -403,16 +403,27 @@ async function loadAudioSources() {
   try {
     const { inputs } = await obs.call('GetInputList');
     
-    // Filter for audio inputs
+    // Filter for audio inputs - check if they have audio tracks
     const audioInputs = [];
     for (const input of inputs) {
       try {
-        const { inputKind } = await obs.call('GetInputKind', { inputName: input.inputName });
-        if (inputKind && (inputKind.includes('audio') || inputKind.includes('wasapi') || inputKind.includes('pulse'))) {
-          audioInputs.push(input);
+        // Check if this input has audio by trying to get its settings
+        // Audio sources will have volume controls available
+        const { inputVolumeDb } = await obs.call('GetInputVolume', { inputName: input.inputName });
+        if (inputVolumeDb !== undefined) {
+          // This input has audio, get its kind for icon selection
+          let inputKind = 'unknown';
+          try {
+            const settings = await obs.call('GetInputSettings', { inputName: input.inputName });
+            inputKind = settings.inputKind || input.inputKind || 'unknown';
+          } catch (e) {
+            // Fallback to input data
+            inputKind = input.inputKind || 'unknown';
+          }
+          audioInputs.push({ ...input, inputKind });
         }
       } catch (e) {
-        // Input might not exist anymore
+        // Input doesn't have audio or doesn't exist anymore
       }
     }
     
@@ -423,7 +434,7 @@ async function loadAudioSources() {
     }
     
     for (const input of audioInputs) {
-      const audioChannel = await createAudioChannel(input.inputName);
+      const audioChannel = await createAudioChannel(input.inputName, input.inputKind);
       elements.audioMixer.appendChild(audioChannel);
     }
   } catch (error) {
@@ -432,7 +443,7 @@ async function loadAudioSources() {
   }
 }
 
-async function createAudioChannel(inputName) {
+async function createAudioChannel(inputName, inputKind = 'unknown') {
   const channel = document.createElement('div');
   channel.className = 'audio-channel';
   
@@ -440,10 +451,13 @@ async function createAudioChannel(inputName) {
     const { inputMuted, inputVolumeDb } = await obs.call('GetInputMute', { inputName });
     const volumePercent = dbToPercent(inputVolumeDb);
     
+    // Get appropriate icon based on input kind
+    const icon = getAudioSourceIcon(inputKind);
+    
     channel.innerHTML = `
       <div class="audio-channel-header">
         <div class="audio-channel-name">
-          <i class="fas fa-volume-up"></i>
+          <i class="fas fa-${icon}"></i>
           <span>${inputName}</span>
         </div>
         <div class="audio-channel-controls">
@@ -481,6 +495,39 @@ async function createAudioChannel(inputName) {
   }
   
   return channel;
+}
+
+// Get icon for audio source type
+function getAudioSourceIcon(inputKind) {
+  const kind = inputKind.toLowerCase();
+  
+  // Desktop audio / system audio
+  if (kind.includes('wasapi') || kind.includes('desktop') || kind.includes('pulse')) {
+    return 'desktop';
+  }
+  
+  // Microphone / audio input device
+  if (kind.includes('input') || kind.includes('capture') || kind.includes('device')) {
+    return 'microphone';
+  }
+  
+  // Media source (video/audio files)
+  if (kind.includes('ffmpeg') || kind.includes('media') || kind.includes('vlc')) {
+    return 'file-audio';
+  }
+  
+  // Browser source
+  if (kind.includes('browser')) {
+    return 'globe';
+  }
+  
+  // Application audio capture
+  if (kind.includes('application') || kind.includes('window')) {
+    return 'window-maximize';
+  }
+  
+  // Default audio icon
+  return 'volume-up';
 }
 
 async function toggleMute(inputName, button) {

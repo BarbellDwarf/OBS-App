@@ -78,7 +78,8 @@
 
       <!-- Center - Preview/Program -->
       <section class="center-content">
-        <div class="studio-mode-toggle">
+        <!-- Studio mode toggle hidden - video preview not available via WebSocket -->
+        <div class="studio-mode-toggle" style="display: none;">
           <label class="toggle-switch">
             <input type="checkbox" id="studio-mode-toggle">
             <span class="toggle-slider"></span>
@@ -86,7 +87,8 @@
           </label>
         </div>
 
-        <div id="single-preview" class="preview-container single-mode">
+        <!-- Preview panels hidden - video streaming not supported by OBS WebSocket -->
+        <div id="single-preview" class="preview-container single-mode" style="display: none;">
           <div class="preview-panel">
             <div class="preview-header">
               <h3>Program Output</h3>
