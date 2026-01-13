@@ -550,19 +550,31 @@ function updateAudioMeter(inputName, levelsMul) {
   
   // Get magnitude from first channel (mono or left channel)
   const magnitude = levelsMul[0][0]; // Range: 0.0 to 1.0
-  console.log(`[updateAudioMeter] "${inputName}" magnitude: ${magnitude.toFixed(3)}`);
   
-  // Convert to number of bars to light up (out of total bars)
+  // Convert linear magnitude to dB (logarithmic scale)
+  // Professional audio meters use dB scale for better visualization
+  // dB = 20 * log10(magnitude), typically ranges from -60dB (quiet) to 0dB (peak)
+  const dB = magnitude > 0 ? 20 * Math.log10(magnitude) : -60;
+  console.log(`[updateAudioMeter] "${inputName}" magnitude: ${magnitude.toFixed(3)}, dB: ${dB.toFixed(1)}`);
+  
+  // Map dB range (-60 to 0) to meter bars (0 to totalBars)
+  // -60dB or below = 0% (silent)
+  // -40dB = ~30% (quiet)
+  // -20dB = ~65% (typical speech)
+  // -5dB = ~90% (loud)
+  // 0dB = 100% (peak/clipping)
   const totalBars = bars.length;
-  const activeCount = Math.round(magnitude * totalBars);
-  console.log(`[updateAudioMeter] "${inputName}" lighting ${activeCount}/${totalBars} bars`);
+  const dbNormalized = Math.max(0, Math.min(1, (dB + 60) / 60)); // Normalize -60dB to 0dB => 0.0 to 1.0
+  const activeCount = Math.round(dbNormalized * totalBars);
+  console.log(`[updateAudioMeter] "${inputName}" lighting ${activeCount}/${totalBars} bars (${(dbNormalized * 100).toFixed(0)}%)`);
   
   // Update meter bars
   bars.forEach((bar, index) => {
     if (index < activeCount) {
       bar.classList.add('active');
-      // Peak indicator (red) for levels above 80%
-      if (index >= totalBars * 0.8) {
+      // Peak indicator (red) for levels above -5dB (very loud, near clipping)
+      // -5dB is about 90% of the meter range
+      if (dB > -5) {
         bar.classList.add('peak');
       } else {
         bar.classList.remove('peak');
