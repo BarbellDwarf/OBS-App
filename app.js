@@ -249,8 +249,8 @@ function collectSettingsFromUI() {
   if (Number.isNaN(minDb)) minDb = DEFAULT_SETTINGS.minDb;
   if (Number.isNaN(maxDb)) maxDb = DEFAULT_SETTINGS.maxDb;
   if (minDb >= maxDb) {
-    maxDb = minDb + 1;
-    alert('Meter range adjusted: max dB must be greater than min dB.');
+    alert('Max dB must be greater than min dB. Please adjust and try again.');
+    return null;
   }
   next.statsIntervalMs = Math.max(500, statsInterval || DEFAULT_SETTINGS.statsIntervalMs);
   next.syncIntervalMs = Math.max(500, syncInterval || DEFAULT_SETTINGS.syncIntervalMs);
@@ -318,7 +318,7 @@ function parseShortcutJsonTextarea() {
     const parsed = JSON.parse(elements.shortcutJson.value);
     return parsed;
   } catch (e) {
-    alert('Invalid JSON for shortcuts. Expect an object like {"toggleStream": "Ctrl+Shift+S"}. Error: ' + e.message);
+    alert('Invalid JSON for shortcuts. Expect an object like {"toggleStream": "Ctrl+Shift+S"}.');
     return null;
   }
 }
@@ -336,8 +336,9 @@ function buildNormalizedShortcutMap() {
 function shouldBlockShortcuts(event) {
   const target = event.target;
   if (!target) return false;
+  if (target.closest('[data-block-shortcuts]')) return true;
   const tag = target.tagName?.toLowerCase();
-  if (['input', 'textarea', 'select', 'button'].includes(tag) && !target.classList.contains('shortcut-input')) {
+  if ((['input', 'textarea', 'select', 'button'].includes(tag) || target.isContentEditable) && !target.classList.contains('shortcut-input')) {
     return true;
   }
   if (elements.settingsModal && elements.settingsModal.style.display !== 'none') {
@@ -452,7 +453,9 @@ function setupEventListeners() {
   if (elements.settingsCloseBtn) elements.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   if (elements.settingsCancelBtn) elements.settingsCancelBtn.addEventListener('click', hideSettingsModal);
   if (elements.settingsSaveBtn) elements.settingsSaveBtn.addEventListener('click', () => {
-    preferences = collectSettingsFromUI();
+    const next = collectSettingsFromUI();
+    if (!next) return;
+    preferences = next;
     savePreferences(preferences);
     applyPreferences();
     updateShortcutJsonTextarea();
@@ -484,7 +487,11 @@ function setupEventListeners() {
         await navigator.clipboard.writeText(elements.shortcutJson.value);
         alert('Shortcut map copied to clipboard.');
       } catch (e) {
-        alert('Clipboard unavailable. You can manually copy the JSON.');
+        if (elements.shortcutJson) {
+          elements.shortcutJson.focus();
+          elements.shortcutJson.select();
+        }
+        alert('Clipboard unavailable. Please copy the JSON manually from the field.');
       }
     });
   }
