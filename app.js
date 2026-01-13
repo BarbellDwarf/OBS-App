@@ -985,7 +985,7 @@ function resetUI() {
   elements.streamBtn.disabled = true;
   elements.recordBtn.disabled = true;
   elements.pauseRecordBtn.disabled = true;
-  elements.transitionBtn.disabled = true;
+  if (elements.transitionBtn) elements.transitionBtn.disabled = true;
   elements.transitionSelect.disabled = true;
   elements.transitionDuration.disabled = true;
   
