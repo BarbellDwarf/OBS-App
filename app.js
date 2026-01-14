@@ -862,7 +862,7 @@ function createFilterControls(sourceName, filter, container) {
     input.addEventListener('change', async (e) => {
       const raw = isInteger ? parseInt(e.target.value, 10) : parseFloat(e.target.value);
       if (Number.isNaN(raw)) {
-        alert('Enter a valid number.');
+        alert(`Enter a valid number between ${min} and ${max}.`);
         e.target.value = currentValue;
         return;
       }
@@ -922,7 +922,7 @@ async function setFilterEnabled(sourceName, filterName, enabled, container) {
     await obs.call('SetSourceFilterEnabled', { sourceName, filterName, filterEnabled: enabled });
   } catch (error) {
     console.error(`Failed to toggle filter "${filterName}" on ${sourceName}:`, error);
-    alert('Failed to toggle filter: ' + error.message);
+    alert(`Failed to toggle filter "${filterName}": ` + error.message);
     if (container) {
       await renderSourceFilters(sourceName, container);
     }
@@ -938,7 +938,7 @@ async function updateFilterSetting(sourceName, filterName, partialSettings, cont
     });
   } catch (error) {
     console.error(`Failed to update filter settings for "${filterName}" on ${sourceName}:`, error);
-    alert('Failed to update filter settings: ' + error.message);
+    alert(`Failed to update settings for filter "${filterName}": ` + error.message);
     if (container) {
       await renderSourceFilters(sourceName, container);
     }
