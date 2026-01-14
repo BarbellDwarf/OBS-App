@@ -690,12 +690,23 @@ function createSourceItem(item) {
   div.dataset.sceneItemId = item.sceneItemId;
   div.dataset.sourceName = item.sourceName;
   
+  const header = document.createElement('div');
+  header.className = 'source-header';
+
   const iconSpan = document.createElement('i');
   iconSpan.className = `fas fa-${getSourceIcon(item.sourceType)}`;
   
   const nameSpan = document.createElement('span');
   nameSpan.className = 'source-name';
   nameSpan.textContent = item.sourceName;
+  
+  const actions = document.createElement('div');
+  actions.className = 'source-actions';
+  
+  const filtersBtn = document.createElement('button');
+  filtersBtn.className = 'btn-icon source-filters-btn';
+  filtersBtn.title = 'Filters';
+  filtersBtn.innerHTML = '<i class="fas fa-sliders-h"></i>';
   
   const visibilityBtn = document.createElement('button');
   visibilityBtn.className = 'btn-icon source-visibility-btn';
@@ -707,10 +718,30 @@ function createSourceItem(item) {
     const isCurrentlyVisible = div.classList.contains('visible');
     toggleSourceVisibility(item.sceneItemId, item.sourceName, !isCurrentlyVisible, visibilityBtn, div);
   };
+
+  actions.appendChild(filtersBtn);
+  actions.appendChild(visibilityBtn);
   
-  div.appendChild(iconSpan);
-  div.appendChild(nameSpan);
-  div.appendChild(visibilityBtn);
+  header.appendChild(iconSpan);
+  header.appendChild(nameSpan);
+  header.appendChild(actions);
+
+  const filtersContainer = document.createElement('div');
+  filtersContainer.className = 'filters-drawer';
+  filtersContainer.style.display = 'none';
+
+  filtersBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const isOpen = filtersContainer.style.display === 'block';
+    filtersContainer.style.display = isOpen ? 'none' : 'block';
+    filtersBtn.classList.toggle('active', !isOpen);
+    if (!isOpen) {
+      await renderSourceFilters(item.sourceName, filtersContainer);
+    }
+  };
+  
+  div.appendChild(header);
+  div.appendChild(filtersContainer);
   
   return div;
 }
@@ -742,6 +773,157 @@ async function toggleSourceVisibility(sceneItemId, sourceName, enabled, button, 
   } catch (error) {
     console.error('Failed to toggle source visibility:', error);
     alert('Failed to toggle source visibility: ' + error.message);
+  }
+}
+
+// Source Filters
+async function renderSourceFilters(sourceName, container) {
+  container.innerHTML = '<div class="filters-loading">Loading filters...</div>';
+  try {
+    const { filters } = await obs.call('GetSourceFilterList', { sourceName });
+    if (!filters || filters.length === 0) {
+      container.innerHTML = '<div class="empty-state small">No filters on this source</div>';
+      return;
+    }
+    
+    container.innerHTML = '';
+    filters.forEach(filter => {
+      const row = createFilterRow(sourceName, filter, container);
+      container.appendChild(row);
+    });
+  } catch (error) {
+    console.error(`Failed to load filters for ${sourceName}:`, error);
+    container.innerHTML = '<div class="empty-state small">Failed to load filters</div>';
+  }
+}
+
+function createFilterRow(sourceName, filter, container) {
+  const row = document.createElement('div');
+  row.className = 'filter-row';
+  
+  const header = document.createElement('div');
+  header.className = 'filter-row-header';
+  header.innerHTML = `
+    <div class="filter-name">
+      <i class="fas fa-filter"></i>
+      <span>${filter.filterName}</span>
+    </div>
+  `;
+  
+  const toggle = document.createElement('label');
+  toggle.className = 'switch';
+  toggle.innerHTML = `
+    <input type="checkbox" ${filter.filterEnabled ? 'checked' : ''}>
+    <span class="slider round"></span>
+  `;
+  const checkbox = toggle.querySelector('input');
+  checkbox.addEventListener('change', async () => {
+    await setFilterEnabled(sourceName, filter.filterName, checkbox.checked, container);
+  });
+  
+  header.appendChild(toggle);
+  row.appendChild(header);
+  
+  const controls = createFilterControls(sourceName, filter, container);
+  if (controls) {
+    row.appendChild(controls);
+  }
+  
+  return row;
+}
+
+function createFilterControls(sourceName, filter, container) {
+  const settings = filter.filterSettings || {};
+  const controls = document.createElement('div');
+  controls.className = 'filter-controls';
+  let hasControl = false;
+  
+  const addNumberControl = (label, key, value, min, max, step, isInteger = false) => {
+    hasControl = true;
+    const wrapper = document.createElement('label');
+    wrapper.className = 'filter-control';
+    wrapper.innerHTML = `
+      <span>${label}</span>
+      <input type="number" value="${value}" min="${min}" max="${max}" step="${step}">
+    `;
+    const input = wrapper.querySelector('input');
+    input.addEventListener('change', async (e) => {
+      const raw = isInteger ? parseInt(e.target.value, 10) : parseFloat(e.target.value);
+      if (Number.isNaN(raw)) return;
+      await updateFilterSetting(sourceName, filter.filterName, { [key]: raw }, container);
+    });
+    controls.appendChild(wrapper);
+  };
+  
+  if (typeof settings.db === 'number') {
+    addNumberControl('Gain (dB)', 'db', settings.db, -30, 30, 0.1);
+  }
+  
+  if (typeof settings.brightness === 'number') {
+    addNumberControl('Brightness', 'brightness', settings.brightness, -2, 2, 0.05);
+  }
+  if (typeof settings.contrast === 'number') {
+    addNumberControl('Contrast', 'contrast', settings.contrast, 0, 2, 0.05);
+  }
+  if (typeof settings.saturation === 'number') {
+    addNumberControl('Saturation', 'saturation', settings.saturation, 0, 2, 0.05);
+  }
+  if (typeof settings.gamma === 'number') {
+    addNumberControl('Gamma', 'gamma', settings.gamma, 0, 3, 0.05);
+  }
+  
+  if (typeof settings.left === 'number') {
+    addNumberControl('Left', 'left', settings.left, 0, 4000, 1, true);
+  }
+  if (typeof settings.right === 'number') {
+    addNumberControl('Right', 'right', settings.right, 0, 4000, 1, true);
+  }
+  if (typeof settings.top === 'number') {
+    addNumberControl('Top', 'top', settings.top, 0, 4000, 1, true);
+  }
+  if (typeof settings.bottom === 'number') {
+    addNumberControl('Bottom', 'bottom', settings.bottom, 0, 4000, 1, true);
+  }
+  
+  if (typeof settings.threshold === 'number') {
+    addNumberControl('Threshold', 'threshold', settings.threshold, -60, 0, 0.5);
+  }
+  
+  if (!hasControl) {
+    controls.innerHTML = '<div class="filter-note">No quick controls for this filter type.</div>';
+  }
+  
+  return controls;
+}
+
+async function setFilterEnabled(sourceName, filterName, enabled, container) {
+  try {
+    await obs.call('SetSourceFilterEnabled', { sourceName, filterName, filterEnabled: enabled });
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
+  } catch (error) {
+    console.error(`Failed to toggle filter "${filterName}" on ${sourceName}:`, error);
+    alert('Failed to toggle filter: ' + error.message);
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
+  }
+}
+
+async function updateFilterSetting(sourceName, filterName, partialSettings, container) {
+  try {
+    await obs.call('SetSourceFilterSettings', {
+      sourceName,
+      filterName,
+      filterSettings: partialSettings
+    });
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
+  } catch (error) {
+    console.error(`Failed to update filter settings for "${filterName}" on ${sourceName}:`, error);
+    alert('Failed to update filter settings: ' + error.message);
   }
 }
 
