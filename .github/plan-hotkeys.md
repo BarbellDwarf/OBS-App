@@ -1,7 +1,8 @@
-# Hotkeys Implementation Plan
-
-- [x] Add renderer-level keyboard listener for Ctrl/Cmd shortcuts
-- [x] Map number keys 1-9 to scenes using the visible order in the scenes list
-- [x] Toggle streaming with Ctrl/Cmd + S and recording with Ctrl/Cmd + R
-- [x] Guard against triggering shortcuts while typing or when disconnected
-- [x] Document the available shortcuts for users
+# Plan: Hotkey Support
+- **Goal**: Keyboard controls for scenes (1-9), stream/record/studio toggles, transitions, volume, mute.
+- **Dependencies**: Settings shortcut map; focus management to avoid conflicts with form fields; existing OBS IPC calls.
+- **Steps**:
+  1. Implement global key listener with enable/disable toggle from settings; respect modal/focus guard and prevent key-repeat spam.
+  2. Map keys to actions: scene switch (cache scene list), Start/StopStream, Start/StopRecording, ToggleStudioMode, TriggerTransition, volume up/down for focused source, mute/unmute focused source.
+  3. Surface visual hints/tooltips for active bindings; detect conflicts; allow restore defaults.
+  4. Persist bindings via settings; provide UI to edit per action and save.
