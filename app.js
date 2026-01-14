@@ -43,11 +43,41 @@ class OBSWebSocketWrapper {
   }
 }
 
-// Audio meter constants
-const MIN_DB = -60;  // Minimum dB level (silent/very quiet)
-const MAX_DB = 0;    // Maximum dB level (peak/clipping)
-const DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
+// Settings defaults
+const SETTINGS_KEY = 'obsPreferences';
+const SETTINGS_VERSION = 1;
+const DEFAULT_SETTINGS = {
+  version: SETTINGS_VERSION,
+  statsIntervalMs: 1000,
+  syncIntervalMs: 1000,
+  minDb: -60,
+  maxDb: 0,
+  theme: {
+    mode: 'dark',
+    accent: '#0084ff'
+  },
+  autoReconnect: {
+    enabled: true,
+    delayMs: 2000,
+    jitterMs: 500,
+    maxAttempts: 5
+  },
+  defaultConnectionName: '',
+  shortcuts: {
+    toggleConnect: 'Ctrl+Shift+C',
+    toggleStream: 'Ctrl+Shift+S',
+    toggleRecord: 'Ctrl+Shift+R',
+    toggleStudioMode: 'Ctrl+Shift+M',
+    triggerTransition: 'Ctrl+Shift+T'
+  }
+};
+
+// Audio meter constants (mutable from settings)
+let MIN_DB = DEFAULT_SETTINGS.minDb;  // Minimum dB level (silent/very quiet)
+let MAX_DB = DEFAULT_SETTINGS.maxDb;    // Maximum dB level (peak/clipping)
+let DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
 const PEAK_THRESHOLD_DB = -5;  // dB level for peak indicator (red)
+let preferences = { ...DEFAULT_SETTINGS };
 
 let obs = null;
 let isConnected = false;
@@ -57,6 +87,16 @@ let statsInterval = null;
 let audioLevelIntervals = {};
 let syncInterval = null; // For bidirectional sync
 let isUserInteractingWithTransition = false; // Prevent sync from overwriting user changes
+let lastConnectionDetails = null;
+let autoReconnectTimeout = null;
+let userInitiatedDisconnect = false;
+let reconnectAttempts = 0;
+let sceneThumbnails = {};
+let thumbnailQueue = [];
+let activeThumbnailRequests = 0;
+let thumbnailRefreshInterval = null;
+let thumbnailQueueSet = new Set();
+const DEFAULT_THUMBNAIL_INTERVAL = 10; // seconds
 
 // DOM Elements - with null checks for missing elements
 const elements = {
@@ -118,7 +158,269 @@ let layoutPresets = { ...DEFAULT_LAYOUT_PRESETS };
 const LAYOUT_LIMITS = {
   min: 200,
   max: 420
+  openSettingsBtn: document.getElementById('open-settings-btn'),
+  settingsModal: document.getElementById('settings-modal'),
+  settingsCloseBtn: document.getElementById('settings-close-btn'),
+  settingsCancelBtn: document.getElementById('settings-cancel-btn'),
+  settingsSaveBtn: document.getElementById('settings-save-btn'),
+  settingsStatsInterval: document.getElementById('settings-stats-interval'),
+  settingsSyncInterval: document.getElementById('settings-sync-interval'),
+  settingsMinDb: document.getElementById('settings-min-db'),
+  settingsMaxDb: document.getElementById('settings-max-db'),
+  settingsAccent: document.getElementById('settings-accent'),
+  settingsThemeMode: document.getElementById('settings-theme-mode'),
+  settingsAutoReconnect: document.getElementById('settings-auto-reconnect'),
+  settingsReconnectDelay: document.getElementById('settings-reconnect-delay'),
+  settingsReconnectJitter: document.getElementById('settings-reconnect-jitter'),
+  settingsReconnectAttempts: document.getElementById('settings-reconnect-attempts'),
+  settingsDefaultConnection: document.getElementById('settings-default-connection'),
+  shortcutInputs: document.querySelectorAll('.shortcut-input'),
+  shortcutJson: document.getElementById('shortcut-json'),
+  shortcutResetBtn: document.getElementById('shortcut-reset-btn'),
+  shortcutExportBtn: document.getElementById('shortcut-export-btn'),
+  shortcutImportBtn: document.getElementById('shortcut-import-btn')
+  refreshScenes: document.getElementById('refresh-scenes'),
+  thumbnailToggle: document.getElementById('thumbnail-toggle'),
+  thumbnailInterval: document.getElementById('thumbnail-interval')
 };
+
+// Preferences helpers
+function loadPreferences() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...stored,
+      theme: { ...DEFAULT_SETTINGS.theme, ...(stored.theme || {}) },
+      autoReconnect: { ...DEFAULT_SETTINGS.autoReconnect, ...(stored.autoReconnect || {}) },
+      shortcuts: { ...DEFAULT_SETTINGS.shortcuts, ...(stored.shortcuts || {}) }
+    };
+    merged.version = SETTINGS_VERSION;
+    return merged;
+  } catch (e) {
+    console.warn('Failed to load preferences, using defaults', e);
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function savePreferences(nextPrefs) {
+  preferences = { ...preferences, ...nextPrefs };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(preferences));
+}
+
+function applyPreferences() {
+  MIN_DB = preferences.minDb;
+  MAX_DB = preferences.maxDb;
+  DB_RANGE = Math.max(1, MAX_DB - MIN_DB);
+
+  // Theme
+  const root = document.documentElement;
+  const accent = preferences.theme?.accent || DEFAULT_SETTINGS.theme.accent;
+  root.style.setProperty('--primary-color', accent);
+  root.style.setProperty('--accent-color', accent);
+  if (preferences.theme?.mode === 'dim') {
+    root.style.setProperty('--dark-bg', '#1b1b1b');
+    root.style.setProperty('--darker-bg', '#121212');
+    root.style.setProperty('--panel-bg', '#1f1f1f');
+  } else {
+    root.style.setProperty('--dark-bg', '#1e1e1e');
+    root.style.setProperty('--darker-bg', '#141414');
+    root.style.setProperty('--panel-bg', '#252525');
+  }
+}
+
+function populateSettingsUI() {
+  if (!elements.settingsModal) return;
+  elements.settingsStatsInterval.value = preferences.statsIntervalMs;
+  elements.settingsSyncInterval.value = preferences.syncIntervalMs;
+  elements.settingsMinDb.value = preferences.minDb;
+  elements.settingsMaxDb.value = preferences.maxDb;
+  elements.settingsAccent.value = preferences.theme?.accent || DEFAULT_SETTINGS.theme.accent;
+  elements.settingsThemeMode.value = preferences.theme?.mode || DEFAULT_SETTINGS.theme.mode;
+  elements.settingsAutoReconnect.checked = !!preferences.autoReconnect?.enabled;
+  elements.settingsReconnectDelay.value = preferences.autoReconnect?.delayMs;
+  elements.settingsReconnectJitter.value = preferences.autoReconnect?.jitterMs;
+  elements.settingsReconnectAttempts.value = preferences.autoReconnect?.maxAttempts;
+  updateShortcutInputsFromPreferences();
+  updateShortcutJsonTextarea();
+  refreshDefaultConnectionOptions();
+}
+
+function showSettingsModal() {
+  populateSettingsUI();
+  elements.settingsModal.style.display = 'flex';
+}
+
+function hideSettingsModal() {
+  if (elements.settingsModal) elements.settingsModal.style.display = 'none';
+}
+
+function updateShortcutInputsFromPreferences() {
+  if (!elements.shortcutInputs) return;
+  elements.shortcutInputs.forEach(input => {
+    const action = input.dataset.action;
+    input.value = preferences.shortcuts[action] || '';
+  });
+}
+
+function updateShortcutJsonTextarea() {
+  if (elements.shortcutJson) {
+    const source = (elements.settingsModal && elements.settingsModal.style.display !== 'none')
+      ? readShortcutsFromInputs()
+      : preferences.shortcuts;
+    elements.shortcutJson.value = JSON.stringify(source, null, 2);
+  }
+}
+
+function collectSettingsFromUI() {
+  const next = { ...preferences };
+  const statsInterval = parseInt(elements.settingsStatsInterval.value, 10);
+  const syncInterval = parseInt(elements.settingsSyncInterval.value, 10);
+  let minDb = parseInt(elements.settingsMinDb.value, 10);
+  let maxDb = parseInt(elements.settingsMaxDb.value, 10);
+  if (Number.isNaN(minDb)) minDb = DEFAULT_SETTINGS.minDb;
+  if (Number.isNaN(maxDb)) maxDb = DEFAULT_SETTINGS.maxDb;
+  if (minDb >= maxDb) {
+    alert('Max dB must be greater than min dB. Please adjust and try again.');
+    return null;
+  }
+  next.statsIntervalMs = Math.max(500, statsInterval || DEFAULT_SETTINGS.statsIntervalMs);
+  next.syncIntervalMs = Math.max(500, syncInterval || DEFAULT_SETTINGS.syncIntervalMs);
+  next.minDb = minDb;
+  next.maxDb = maxDb;
+  next.theme = {
+    mode: elements.settingsThemeMode.value || DEFAULT_SETTINGS.theme.mode,
+    accent: elements.settingsAccent.value || DEFAULT_SETTINGS.theme.accent
+  };
+  next.autoReconnect = {
+    enabled: !!elements.settingsAutoReconnect.checked,
+    delayMs: Math.max(500, parseInt(elements.settingsReconnectDelay.value, 10) || DEFAULT_SETTINGS.autoReconnect.delayMs),
+    jitterMs: Math.max(0, parseInt(elements.settingsReconnectJitter.value, 10) || DEFAULT_SETTINGS.autoReconnect.jitterMs),
+    maxAttempts: Math.max(1, parseInt(elements.settingsReconnectAttempts.value, 10) || DEFAULT_SETTINGS.autoReconnect.maxAttempts)
+  };
+  next.defaultConnectionName = elements.settingsDefaultConnection.value || '';
+  next.shortcuts = readShortcutsFromInputs();
+  return next;
+}
+
+function refreshDefaultConnectionOptions() {
+  if (!elements.settingsDefaultConnection) return;
+  const connections = getSavedConnections();
+  elements.settingsDefaultConnection.innerHTML = '<option value="">None</option>';
+  connections.forEach(conn => {
+    const opt = document.createElement('option');
+    opt.value = conn.name;
+    opt.textContent = conn.name;
+    elements.settingsDefaultConnection.appendChild(opt);
+  });
+  elements.settingsDefaultConnection.value = preferences.defaultConnectionName || '';
+}
+
+function normalizeShortcutFromEvent(event) {
+  const parts = [];
+  if (event.ctrlKey || event.metaKey) parts.push('Ctrl');
+  if (event.shiftKey) parts.push('Shift');
+  if (event.altKey) parts.push('Alt');
+  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  parts.push(key);
+  return parts.join('+');
+}
+
+function handleShortcutInputKeydown(e) {
+  e.preventDefault();
+  const combo = normalizeShortcutFromEvent(e);
+  e.target.value = combo;
+}
+
+function readShortcutsFromInputs() {
+  const next = { ...preferences.shortcuts };
+  if (!elements.shortcutInputs) return next;
+  elements.shortcutInputs.forEach(input => {
+    const action = input.dataset.action;
+    if (action && input.value.trim()) {
+      next[action] = input.value.trim();
+    }
+  });
+  return next;
+}
+
+function parseShortcutJsonTextarea() {
+  if (!elements.shortcutJson || !elements.shortcutJson.value.trim()) return null;
+  try {
+    const parsed = JSON.parse(elements.shortcutJson.value);
+    return parsed;
+  } catch (e) {
+    alert('Invalid JSON for shortcuts. Expect an object like {"toggleStream": "Ctrl+Shift+S"}.');
+    return null;
+  }
+}
+
+function buildNormalizedShortcutMap() {
+  const map = {};
+  Object.entries(preferences.shortcuts || {}).forEach(([action, combo]) => {
+    if (combo) {
+      map[combo.toUpperCase()] = action;
+    }
+  });
+  return map;
+}
+
+function shouldBlockShortcuts(event) {
+  const target = event.target;
+  if (!target) return false;
+  if (target.closest('[data-block-shortcuts]')) return true;
+  if (isInteractiveElement(target)) return true;
+  if (elements.settingsModal && elements.settingsModal.style.display !== 'none') {
+    return true;
+  }
+  return false;
+}
+
+function isInteractiveElement(target) {
+  const tag = target.tagName?.toLowerCase();
+  if ((['input', 'textarea', 'select', 'button'].includes(tag) || target.isContentEditable) && !target.classList.contains('shortcut-input')) {
+    return true;
+  }
+  return false;
+}
+
+function executeShortcutAction(action) {
+  switch (action) {
+    case 'toggleConnect':
+      handleConnect();
+      break;
+    case 'toggleStream':
+      toggleStreaming();
+      break;
+    case 'toggleRecord':
+      toggleRecording();
+      break;
+    case 'toggleStudioMode':
+      if (elements.studioModeToggle) {
+        elements.studioModeToggle.checked = !elements.studioModeToggle.checked;
+        toggleStudioMode();
+      }
+      break;
+    case 'triggerTransition':
+      performTransition();
+      break;
+    default:
+      break;
+  }
+}
+
+function registerGlobalShortcuts() {
+  document.addEventListener('keydown', (event) => {
+    if (shouldBlockShortcuts(event)) return;
+    const combo = normalizeShortcutFromEvent(event).toUpperCase();
+    const map = buildNormalizedShortcutMap();
+    const action = map[combo];
+    if (action) {
+      event.preventDefault();
+      executeShortcutAction(action);
+    }
+  });
+}
 
 // Initialize
 async function init() {
@@ -192,6 +494,85 @@ function setupEventListeners() {
   if (elements.saveLayoutPresetBtn) elements.saveLayoutPresetBtn.addEventListener('click', saveCustomLayoutPreset);
   if (elements.deleteLayoutPresetBtn) elements.deleteLayoutPresetBtn.addEventListener('click', deleteSelectedLayoutPreset);
   if (elements.resetLayoutPresetBtn) elements.resetLayoutPresetBtn.addEventListener('click', resetLayoutPresetsToDefault);
+
+  if (elements.openSettingsBtn) elements.openSettingsBtn.addEventListener('click', showSettingsModal);
+  if (elements.settingsCloseBtn) elements.settingsCloseBtn.addEventListener('click', hideSettingsModal);
+  if (elements.settingsCancelBtn) elements.settingsCancelBtn.addEventListener('click', hideSettingsModal);
+  if (elements.settingsSaveBtn) elements.settingsSaveBtn.addEventListener('click', () => {
+    const next = collectSettingsFromUI();
+    if (!next) return;
+    preferences = next;
+    savePreferences(preferences);
+    applyPreferences();
+    updateShortcutJsonTextarea();
+    if (isConnected) {
+      startStatsPolling();
+      startBidirectionalSync();
+    }
+    hideSettingsModal();
+  });
+  if (elements.shortcutInputs) {
+    elements.shortcutInputs.forEach(input => {
+      input.addEventListener('keydown', handleShortcutInputKeydown);
+      input.addEventListener('focus', (e) => e.target.select());
+    });
+  }
+  if (elements.shortcutResetBtn) {
+    elements.shortcutResetBtn.addEventListener('click', () => {
+      elements.shortcutInputs.forEach(input => {
+        const action = input.dataset.action;
+        input.value = DEFAULT_SETTINGS.shortcuts[action] || '';
+      });
+      updateShortcutJsonTextarea();
+    });
+  }
+  if (elements.shortcutExportBtn) {
+    elements.shortcutExportBtn.addEventListener('click', async () => {
+      updateShortcutJsonTextarea();
+      try {
+        await navigator.clipboard.writeText(elements.shortcutJson.value);
+        alert('Shortcut map copied to clipboard.');
+      } catch (e) {
+        if (elements.shortcutJson) {
+          elements.shortcutJson.focus();
+          elements.shortcutJson.select();
+        }
+        alert('Clipboard unavailable. Please copy the JSON manually from the field.');
+      }
+    });
+  }
+  if (elements.shortcutImportBtn) {
+    elements.shortcutImportBtn.addEventListener('click', () => {
+      const parsed = parseShortcutJsonTextarea();
+      if (parsed) {
+        Object.keys(DEFAULT_SETTINGS.shortcuts).forEach(action => {
+          if (parsed[action]) {
+            const input = document.querySelector(`.shortcut-input[data-action="${action}"]`);
+            if (input) input.value = parsed[action];
+          }
+        });
+        updateShortcutJsonTextarea();
+      }
+    });
+  }
+  if (elements.refreshScenes) elements.refreshScenes.addEventListener('click', () => {
+    clearSceneThumbnails(true);
+    loadScenes();
+  });
+  if (elements.thumbnailToggle) elements.thumbnailToggle.addEventListener('change', () => {
+    saveSettings();
+    if (isThumbnailsEnabled()) {
+      startThumbnailRefresh();
+      refreshAllThumbnails(true);
+    } else {
+      stopThumbnailRefresh();
+      clearSceneThumbnails(false);
+    }
+  });
+  if (elements.thumbnailInterval) elements.thumbnailInterval.addEventListener('change', () => {
+    saveSettings();
+    startThumbnailRefresh();
+  });
 }
 
 // Connection Management Functions
@@ -210,10 +591,20 @@ function loadConnectionsList() {
   
   connections.forEach((conn, index) => {
     const option = document.createElement('option');
-    option.value = index;
+    option.value = index.toString();
     option.textContent = conn.name;
     elements.savedConnections.appendChild(option);
   });
+  refreshDefaultConnectionOptions();
+  
+  // Auto-select default connection
+  if (preferences.defaultConnectionName) {
+    const idx = connections.findIndex(c => c.name === preferences.defaultConnectionName);
+    if (idx >= 0) {
+      elements.savedConnections.value = idx.toString();
+      loadSavedConnection();
+    }
+  }
 }
 
 function loadSavedConnection() {
@@ -540,6 +931,7 @@ function saveCurrentConnection() {
     
     saveSavedConnections(connections);
     loadConnectionsList();
+    refreshDefaultConnectionOptions();
     
     // Select the saved connection
     const newIndex = connections.findIndex(c => c.name === connectionName);
@@ -566,6 +958,7 @@ function deleteCurrentConnection() {
   connections.splice(selectedIndex, 1);
   saveSavedConnections(connections);
   loadConnectionsList();
+  refreshDefaultConnectionOptions();
   
   // Reset to new connection
   elements.savedConnections.value = '';
@@ -578,7 +971,9 @@ function deleteCurrentConnection() {
 function saveSettings() {
   const settings = {
     host: elements.wsHost.value,
-    port: elements.wsPort.value
+    port: elements.wsPort.value,
+    thumbnailsEnabled: elements.thumbnailToggle ? elements.thumbnailToggle.checked : true,
+    thumbnailInterval: getThumbnailIntervalSeconds()
   };
   localStorage.setItem('obsSettings', JSON.stringify(settings));
 }
@@ -587,6 +982,42 @@ function loadSettings() {
   const settings = JSON.parse(localStorage.getItem('obsSettings') || '{}');
   if (settings.host) elements.wsHost.value = settings.host;
   if (settings.port) elements.wsPort.value = settings.port;
+  // Thumbnail preferences
+  if (elements.thumbnailToggle) {
+    elements.thumbnailToggle.checked = settings.thumbnailsEnabled !== false;
+  }
+  if (elements.thumbnailInterval) {
+    const interval = settings.thumbnailInterval || DEFAULT_THUMBNAIL_INTERVAL;
+    elements.thumbnailInterval.value = interval;
+  }
+}
+
+function clearAutoReconnectTimer() {
+  if (autoReconnectTimeout) {
+    clearTimeout(autoReconnectTimeout);
+    autoReconnectTimeout = null;
+  }
+}
+
+function scheduleAutoReconnect(reason = '') {
+  if (!preferences.autoReconnect?.enabled || userInitiatedDisconnect) return;
+  if (!lastConnectionDetails) return;
+  const maxAttempts = preferences.autoReconnect.maxAttempts || DEFAULT_SETTINGS.autoReconnect.maxAttempts;
+  if (reconnectAttempts >= maxAttempts) return;
+  const baseDelay = Math.max(500, preferences.autoReconnect.delayMs || DEFAULT_SETTINGS.autoReconnect.delayMs);
+  const jitter = Math.max(0, preferences.autoReconnect.jitterMs || DEFAULT_SETTINGS.autoReconnect.jitterMs);
+  const delay = baseDelay + Math.floor(Math.random() * jitter);
+  reconnectAttempts += 1;
+  clearAutoReconnectTimer();
+  autoReconnectTimeout = setTimeout(async () => {
+    try {
+      console.log(`Auto-reconnect attempt ${reconnectAttempts} (reason: ${reason || 'unknown'})`);
+      await connect(lastConnectionDetails);
+    } catch (e) {
+      console.warn('Auto-reconnect attempt failed', e);
+      scheduleAutoReconnect('retry');
+    }
+  }, delay);
 }
 
 // Connection handling
@@ -597,28 +1028,39 @@ async function handleConnect() {
   }
   
   if (isConnected) {
+    userInitiatedDisconnect = true;
     await disconnect();
   } else {
+    userInitiatedDisconnect = false;
+    reconnectAttempts = 0;
     await connect();
   }
 }
 
-async function connect() {
+async function connect(connectionOpts = null) {
   try {
     console.log('Attempting to connect to OBS...');
     updateConnectionStatus('connecting', 'Connecting...');
     elements.connectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
     elements.connectBtn.disabled = true;
 
-    const host = elements.wsHost.value || 'localhost';
-    const port = elements.wsPort.value || '4455';
-    const password = elements.wsPassword.value || '';
+    const host = connectionOpts?.host || elements.wsHost.value || 'localhost';
+    const port = connectionOpts?.port || elements.wsPort.value || '4455';
+    const password = connectionOpts?.password || elements.wsPassword.value || '';
+
+    lastConnectionDetails = { host, port, password };
+    elements.wsHost.value = host;
+    elements.wsPort.value = port;
+    elements.wsPassword.value = password;
+    userInitiatedDisconnect = false;
 
     console.log(`Connecting to ws://${host}:${port}`);
     await obs.connect(`ws://${host}:${port}`, password);
     
     console.log('Connection successful!');
     isConnected = true;
+    reconnectAttempts = 0;
+    clearAutoReconnectTimer();
     updateConnectionStatus('connected', 'Connected');
     elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Disconnect';
     elements.connectBtn.disabled = false;
@@ -632,6 +1074,9 @@ async function connect() {
     updateConnectionStatus('disconnected', 'Connection Failed');
     elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
     elements.connectBtn.disabled = false;
+    if (!userInitiatedDisconnect) {
+      scheduleAutoReconnect('connect-failed');
+    }
     
     // Provide more detailed error message
     let errorMessage = 'Failed to connect to OBS';
@@ -648,6 +1093,8 @@ async function connect() {
 async function disconnect() {
   try {
     console.log('Disconnecting from OBS...');
+    userInitiatedDisconnect = true;
+    clearAutoReconnectTimer();
     if (obs && isConnected) {
       await obs.disconnect();
     }
@@ -715,12 +1162,14 @@ function setupOBSEventListeners() {
   obs.on('ConnectionClosed', () => {
     console.log('Connection to OBS closed');
     resetConnectionUI();
+    scheduleAutoReconnect('closed');
   });
   
   obs.on('ConnectionError', (error) => {
     console.error('Connection error:', error);
     resetConnectionUI();
     alert('Lost connection to OBS: ' + (error.message || 'Unknown error'));
+    scheduleAutoReconnect('error');
   });
   
   // Scene events
@@ -856,9 +1305,11 @@ async function loadScenes() {
     scenes.reverse().forEach(scene => {
       const sceneItem = createSceneItem(scene.sceneName);
       elements.scenesList.appendChild(sceneItem);
+      queueSceneThumbnail(scene.sceneName);
     });
     
     updateActiveScene();
+    startThumbnailRefresh();
   } catch (error) {
     console.error('Failed to load scenes:', error);
     elements.scenesList.innerHTML = '<div class="empty-state">Failed to load scenes</div>';
@@ -869,12 +1320,16 @@ function createSceneItem(sceneName) {
   const item = document.createElement('div');
   item.className = 'list-item';
   item.innerHTML = `
+    <div class="scene-thumbnail">
+      <div class="thumb-placeholder loading"><i class="fas fa-image"></i></div>
+    </div>
     <div class="list-item-label">
       <i class="fas fa-image list-item-icon"></i>
       <span>${sceneName}</span>
     </div>
   `;
   item.addEventListener('click', () => setScene(sceneName));
+  item.addEventListener('mouseenter', () => queueSceneThumbnail(sceneName, true));
   item.dataset.sceneName = sceneName;
   return item;
 }
@@ -901,9 +1356,168 @@ async function setScene(sceneName) {
       // Refresh audio mixer when scene changes
       await loadAudioSources();
     }
+    queueSceneThumbnail(sceneName, true);
   } catch (error) {
     console.error('Failed to set scene:', error);
   }
+}
+
+// Scene thumbnails
+const THUMBNAIL_WIDTH = 240;
+const THUMBNAIL_HEIGHT = 135;
+const MAX_THUMBNAIL_REQUESTS = 2;
+
+function isThumbnailsEnabled() {
+  return elements.thumbnailToggle ? elements.thumbnailToggle.checked : true;
+}
+
+function getThumbnailIntervalSeconds() {
+  const raw = elements.thumbnailInterval ? parseInt(elements.thumbnailInterval.value, 10) : NaN;
+  if (!Number.isFinite(raw)) return DEFAULT_THUMBNAIL_INTERVAL;
+  return Math.min(120, Math.max(5, raw));
+}
+
+function getThumbnailIntervalMs() {
+  return getThumbnailIntervalSeconds() * 1000;
+}
+
+function stopThumbnailRefresh() {
+  if (thumbnailRefreshInterval) {
+    clearInterval(thumbnailRefreshInterval);
+    thumbnailRefreshInterval = null;
+  }
+}
+
+function startThumbnailRefresh() {
+  stopThumbnailRefresh();
+  if (!isThumbnailsEnabled()) return;
+  thumbnailRefreshInterval = setInterval(() => {
+    refreshAllThumbnails(false);
+  }, getThumbnailIntervalMs());
+}
+
+function refreshAllThumbnails(force = false) {
+  if (!isThumbnailsEnabled()) return;
+  document.querySelectorAll('#scenes-list .list-item').forEach(item => {
+    const sceneName = item.dataset.sceneName;
+    if (sceneName) {
+      queueSceneThumbnail(sceneName, force);
+    }
+  });
+}
+
+function clearSceneThumbnails(resetPlaceholders = false) {
+  sceneThumbnails = {};
+  thumbnailQueue = [];
+  activeThumbnailRequests = 0;
+  thumbnailQueueSet.clear();
+  if (resetPlaceholders) {
+    document.querySelectorAll('#scenes-list .scene-thumbnail').forEach(box => {
+      setThumbnailPlaceholder(box, true);
+    });
+  }
+}
+
+function setThumbnailPlaceholder(box, isLoading) {
+  if (!box) return;
+  const placeholder = document.createElement('div');
+  placeholder.className = 'thumb-placeholder' + (isLoading ? ' loading' : '');
+  const icon = document.createElement('i');
+  icon.className = 'fas fa-image';
+  placeholder.appendChild(icon);
+  box.replaceChildren(placeholder);
+}
+
+function queueSceneThumbnail(sceneName, force = false) {
+  if (!sceneName || !obs || !isThumbnailsEnabled()) return;
+  const now = Date.now();
+  const cadenceMs = getThumbnailIntervalMs();
+  const existing = sceneThumbnails[sceneName];
+  if (!force && existing) {
+    if (existing.status === 'loading') return;
+    if (existing.status === 'error' && existing.lastFail && now - existing.lastFail < cadenceMs) {
+      updateSceneThumbnail(sceneName);
+      return;
+    }
+    if (existing.status === 'loaded' && existing.updatedAt && now - existing.updatedAt < cadenceMs) {
+      updateSceneThumbnail(sceneName);
+      return;
+    }
+  }
+  sceneThumbnails[sceneName] = {
+    ...(existing || {}),
+    status: 'loading'
+  };
+  if (!thumbnailQueueSet.has(sceneName)) {
+    thumbnailQueueSet.add(sceneName);
+    thumbnailQueue.push(sceneName);
+  }
+  updateSceneThumbnail(sceneName);
+  processThumbnailQueue();
+}
+
+function processThumbnailQueue() {
+  while (activeThumbnailRequests < MAX_THUMBNAIL_REQUESTS && thumbnailQueue.length > 0) {
+    const sceneName = thumbnailQueue.shift();
+    if (!sceneName) continue;
+    thumbnailQueueSet.delete(sceneName);
+    activeThumbnailRequests++;
+    fetchSceneThumbnail(sceneName).finally(() => {
+      activeThumbnailRequests--;
+      processThumbnailQueue();
+    });
+  }
+}
+
+async function fetchSceneThumbnail(sceneName) {
+  try {
+    const { imageData } = await obs.call('GetSourceScreenshot', {
+      sourceName: sceneName,
+      imageFormat: 'jpeg',
+      imageCompressionQuality: 60,
+      imageWidth: THUMBNAIL_WIDTH,
+      imageHeight: THUMBNAIL_HEIGHT
+    });
+    const hasImage = !!imageData;
+    sceneThumbnails[sceneName] = {
+      status: hasImage ? 'loaded' : 'error',
+      data: hasImage ? imageData : null,
+      updatedAt: hasImage ? Date.now() : null,
+      lastFail: hasImage ? null : Date.now()
+    };
+  } catch (error) {
+    console.error('Thumbnail fetch failed for scene:', sceneName, error);
+    sceneThumbnails[sceneName] = {
+      status: 'error',
+      data: null,
+      updatedAt: null,
+      lastFail: Date.now()
+    };
+  }
+  updateSceneThumbnail(sceneName);
+}
+
+function updateSceneThumbnail(sceneName) {
+  const entry = sceneThumbnails[sceneName];
+  document.querySelectorAll('#scenes-list .list-item').forEach(item => {
+    if (item.dataset.sceneName !== sceneName) return;
+    const box = item.querySelector('.scene-thumbnail');
+    if (!box) return;
+    if (!isThumbnailsEnabled()) {
+      setThumbnailPlaceholder(box, false);
+      return;
+    }
+    if (entry && entry.status === 'loaded' && entry.data) {
+      const img = document.createElement('img');
+      img.src = `data:image/jpeg;base64,${entry.data}`;
+      img.alt = `${sceneName} thumbnail`;
+      box.replaceChildren(img);
+    } else if (entry && entry.status === 'loading') {
+      setThumbnailPlaceholder(box, true);
+    } else {
+      setThumbnailPlaceholder(box, false);
+    }
+  });
 }
 
 // Sources
@@ -1396,6 +2010,7 @@ async function setCurrentTransition() {
 function startStatsPolling() {
   if (statsInterval) clearInterval(statsInterval);
   
+  const intervalMs = Math.max(500, preferences.statsIntervalMs || DEFAULT_SETTINGS.statsIntervalMs);
   statsInterval = setInterval(async () => {
     try {
       const stats = await obs.call('GetStats');
@@ -1415,7 +2030,7 @@ function startStatsPolling() {
     } catch (error) {
       console.error('Failed to get stats:', error);
     }
-  }, 1000);
+  }, intervalMs);
 }
 
 function updateStats(stats) {
@@ -1509,6 +2124,7 @@ async function switchSceneCollection(collectionName) {
     // Wait a moment for OBS to switch collections
     setTimeout(async () => {
       await loadSceneCollections();
+      clearSceneThumbnails(true);
       await loadScenes();
       await loadAudioSources();
     }, 500);
@@ -1552,6 +2168,7 @@ async function switchProfile(profileName) {
     // Wait a moment for OBS to switch profiles
     setTimeout(async () => {
       await loadProfiles();
+      clearSceneThumbnails(true);
       await loadScenes();
       await loadAudioSources();
     }, 500);
@@ -1586,6 +2203,8 @@ function resetUI() {
   if (elements.collectionsList) elements.collectionsList.innerHTML = '<div class="empty-state">Not connected to OBS</div>';
   if (elements.profilesList) elements.profilesList.innerHTML = '<div class="empty-state">Not connected to OBS</div>';
   if (elements.recordingsList) elements.recordingsList.innerHTML = '<div class="empty-state">Recordings list requires OBS connection</div>';
+  clearSceneThumbnails(true);
+  stopThumbnailRefresh();
   
   elements.streamBtn.disabled = true;
   elements.recordBtn.disabled = true;
@@ -1616,6 +2235,7 @@ function clearIntervals() {
     clearInterval(syncInterval);
     syncInterval = null;
   }
+  stopThumbnailRefresh();
   
   Object.values(audioLevelIntervals).forEach(interval => clearInterval(interval));
   audioLevelIntervals = {};
@@ -1625,6 +2245,7 @@ function clearIntervals() {
 function startBidirectionalSync() {
   if (syncInterval) clearInterval(syncInterval);
   
+  const intervalMs = Math.max(500, preferences.syncIntervalMs || DEFAULT_SETTINGS.syncIntervalMs);
   syncInterval = setInterval(async () => {
     if (!isConnected || !obs) return;
     
@@ -1707,12 +2328,15 @@ function startBidirectionalSync() {
       console.error('Bidirectional sync error:', error);
       // Don't spam errors if connection is lost
     }
-  }, 1000); // Poll every second
+  }, intervalMs); // Poll every second
 }
 
 // Initialize app when DOM is ready
 console.log('app.js loaded, waiting for DOMContentLoaded...');
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('DOMContentLoaded event fired!');
+  preferences = loadPreferences();
+  applyPreferences();
+  registerGlobalShortcuts();
   await init();
 });
