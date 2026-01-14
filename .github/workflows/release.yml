@@ -27,29 +27,42 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
 
-          LAST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)
-          if [ -n "$LAST_TAG" ]; then
-            RANGE="$LAST_TAG..HEAD"
-            BASE_VERSION="${LAST_TAG#v}"
+          TAG_LIST=$(git tag -l "v*" || true)
+          SEMVER_TAGS=$(echo "$TAG_LIST" | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; })
+          LAST_VERSION=""
+          if [ -n "$SEMVER_TAGS" ]; then
+            LAST_VERSION=$(echo "$SEMVER_TAGS" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          fi
+          if [ -n "$LAST_VERSION" ]; then
+            RANGE="v${LAST_VERSION}..HEAD"
+            BASE_VERSION="$LAST_VERSION"
           else
             RANGE="HEAD"
             BASE_VERSION=$(jq -r .version package.json)
           fi
 
-          if [ "$RANGE" = "HEAD" ]; then
-            COMMITS=$(git log -1 --pretty=%s || true)
-          else
-            COMMITS=$(git log "$RANGE" --pretty=%s || true)
-          fi
+          COMMITS=$(git log "$RANGE" --pretty=%s || true)
 
           BUMP=""
-          echo "$COMMITS" | grep -qi "#major" && BUMP="major"
-          if [ -z "$BUMP" ] && echo "$COMMITS" | grep -qi "#minor"; then
-            BUMP="minor"
-          fi
-          if [ -z "$BUMP" ] && echo "$COMMITS" | grep -qi "#patch"; then
-            BUMP="patch"
-          fi
+          MATCHED_KEYWORDS=$(echo "$COMMITS" | grep -Eio '#(major|minor|patch)' || true)
+          while IFS= read -r KEYWORD; do
+            case "${KEYWORD,,}" in
+              \#major)
+                BUMP="major"
+                break
+                ;;
+              \#minor)
+                if [ "$BUMP" != "major" ]; then
+                  BUMP="minor"
+                fi
+                ;;
+              \#patch)
+                if [ -z "$BUMP" ]; then
+                  BUMP="patch"
+                fi
+                ;;
+            esac
+          done <<< "$MATCHED_KEYWORDS"
 
           if [ -z "$BUMP" ]; then
             echo "No semver bump keyword found in commit messages ($RANGE). Add #major, #minor, or #patch to proceed." >&2
@@ -87,22 +100,7 @@ jobs:
           cache: npm
 
       - name: Apply release version
-        run: |
-          node <<'EOF'
-          const fs = require('fs');
-          const version = process.env.RELEASE_VERSION;
-          if (!version) {
-            throw new Error('RELEASE_VERSION is not set');
-          }
-          ['package.json', 'package-lock.json'].forEach((file) => {
-            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-            if (data.packages && data.packages['']) {
-              data.packages[''].version = version;
-            }
-            data.version = version;
-            fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-          });
-          EOF
+        run: node .github/scripts/apply-release-version.js
 
       - name: Install dependencies
         run: npm ci
@@ -137,22 +135,7 @@ jobs:
 
       - name: Apply release version
         shell: bash
-        run: |
-          node <<'EOF'
-          const fs = require('fs');
-          const version = process.env.RELEASE_VERSION;
-          if (!version) {
-            throw new Error('RELEASE_VERSION is not set');
-          }
-          ['package.json', 'package-lock.json'].forEach((file) => {
-            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-            if (data.packages && data.packages['']) {
-              data.packages[''].version = version;
-            }
-            data.version = version;
-            fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-          });
-          EOF
+        run: node .github/scripts/apply-release-version.js
 
       - name: Install dependencies
         run: npm ci
