@@ -165,6 +165,26 @@ const elements = {
   refreshCollections: document.getElementById('refresh-collections'),
   profilesList: document.getElementById('profiles-list'),
   refreshProfiles: document.getElementById('refresh-profiles'),
+  toastContainer: document.getElementById('toast-container'),
+  notifyDnd: document.getElementById('notify-dnd'),
+  notifyConnection: document.getElementById('notify-connection'),
+  notifyStream: document.getElementById('notify-stream'),
+  notifyRecord: document.getElementById('notify-record'),
+  notifyScene: document.getElementById('notify-scene'),
+  notifyError: document.getElementById('notify-error')
+};
+
+const notificationDefaults = {
+  dnd: false,
+  connection: true,
+  stream: true,
+  record: true,
+  scene: true,
+  error: true
+};
+
+let notificationSettings = { ...notificationDefaults };
+const lastToastTimestamps = {};
   recordingsList: document.getElementById('recordings-list'),
   refreshRecordings: document.getElementById('refresh-recordings'),
   layoutPresetSelect: document.getElementById('layout-preset-select'),
@@ -488,6 +508,8 @@ async function init() {
     setupEventListeners();
     loadConnectionsList();
     loadSettings();
+    loadNotificationSettings();
+    setupNotificationSettingsListeners();
     loadStatsSettings();
     initializeLayoutPresets();
     console.log('OBS Remote Control initialized successfully');
@@ -1076,6 +1098,101 @@ function handleStatsSettingsChange() {
   if (isConnected) startStatsPolling(); // restart with new interval/threshold
 }
 
+function loadNotificationSettings() {
+  const stored = JSON.parse(localStorage.getItem('notificationSettings') || '{}');
+  notificationSettings = { ...notificationDefaults, ...stored };
+  if (elements.notifyDnd) elements.notifyDnd.checked = notificationSettings.dnd;
+  if (elements.notifyConnection) elements.notifyConnection.checked = notificationSettings.connection;
+  if (elements.notifyStream) elements.notifyStream.checked = notificationSettings.stream;
+  if (elements.notifyRecord) elements.notifyRecord.checked = notificationSettings.record;
+  if (elements.notifyScene) elements.notifyScene.checked = notificationSettings.scene;
+  if (elements.notifyError) elements.notifyError.checked = notificationSettings.error;
+}
+
+function saveNotificationSettings() {
+  localStorage.setItem('notificationSettings', JSON.stringify(notificationSettings));
+}
+
+function setupNotificationSettingsListeners() {
+  const bindings = [
+    { el: elements.notifyDnd, key: 'dnd' },
+    { el: elements.notifyConnection, key: 'connection' },
+    { el: elements.notifyStream, key: 'stream' },
+    { el: elements.notifyRecord, key: 'record' },
+    { el: elements.notifyScene, key: 'scene' },
+    { el: elements.notifyError, key: 'error' }
+  ];
+  bindings.forEach(({ el, key }) => {
+    if (!el) return;
+    el.addEventListener('change', () => {
+      notificationSettings[key] = el.checked;
+      saveNotificationSettings();
+    });
+  });
+}
+
+function shouldNotify(category) {
+  if (!elements.toastContainer) return false;
+  if (notificationSettings.dnd) return false;
+  return notificationSettings[category] !== false;
+}
+
+function showToast(category, message, options = {}) {
+  if (!elements.toastContainer) return;
+  if (!shouldNotify(category)) return;
+
+  const severity = options.severity || 'info';
+  const title = options.title || {
+    connection: 'Connection',
+    stream: 'Streaming',
+    record: 'Recording',
+    scene: 'Scene',
+    error: 'Error'
+  }[category] || 'Notification';
+  const key = `${category}:${message}`;
+  const now = Date.now();
+  if (lastToastTimestamps[key] && now - lastToastTimestamps[key] < 1500) {
+    return;
+  }
+  lastToastTimestamps[key] = now;
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${severity}`;
+
+  const iconMap = {
+    success: 'fa-check-circle',
+    info: 'fa-info-circle',
+    warning: 'fa-exclamation-triangle',
+    error: 'fa-times-circle'
+  };
+
+  const icon = document.createElement('i');
+  icon.className = `fas ${iconMap[severity] || iconMap.info} toast-icon`;
+
+  const content = document.createElement('div');
+  content.className = 'toast-content';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'toast-title';
+  titleEl.textContent = title;
+
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = message;
+
+  content.appendChild(titleEl);
+  content.appendChild(messageEl);
+
+  toast.appendChild(icon);
+  toast.appendChild(content);
+
+  elements.toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.remove();
+  }, options.duration || 4000);
+}
+
 // Connection handling
 async function handleConnect() {
   if (!obs) {
@@ -1122,6 +1239,7 @@ async function connect(connectionOpts = null) {
     elements.connectBtn.disabled = false;
     elements.connectBtn.classList.remove('btn-primary');
     elements.connectBtn.classList.add('btn-danger');
+    showToast('connection', 'Connected to OBS', { severity: 'success', title: 'Connected' });
     
     saveSettings();
     await initializeOBSConnection();
@@ -1143,6 +1261,7 @@ async function connect(connectionOpts = null) {
       errorMessage += '\n\nMake sure:\n• OBS Studio is running\n• WebSocket server is enabled in OBS\n• Host and port are correct';
     }
     alert(errorMessage);
+    showToast('error', errorMessage, { severity: 'error', title: 'Connection failed', duration: 5000 });
   }
 }
 
@@ -1156,6 +1275,7 @@ async function disconnect() {
     }
     resetConnectionUI();
     console.log('Disconnected successfully');
+    showToast('connection', 'Disconnected from OBS', { severity: 'info', title: 'Disconnected' });
   } catch (error) {
     console.error('Disconnect error:', error);
     // Still reset UI even if disconnect fails
@@ -1218,12 +1338,16 @@ function setupOBSEventListeners() {
   obs.on('ConnectionClosed', () => {
     console.log('Connection to OBS closed');
     resetConnectionUI();
+    showToast('connection', 'Connection to OBS closed', { severity: 'warning', title: 'Connection closed' });
     scheduleAutoReconnect('closed');
   });
   
   obs.on('ConnectionError', (error) => {
     console.error('Connection error:', error);
     resetConnectionUI();
+    const message = 'Lost connection to OBS: ' + (error.message || 'Unknown error');
+    alert(message);
+    showToast('error', message, { severity: 'error', title: 'Connection error' });
     alert('Lost connection to OBS: ' + (error.message || 'Unknown error'));
     scheduleAutoReconnect('error');
   });
@@ -1238,6 +1362,7 @@ function setupOBSEventListeners() {
     }
     // Refresh audio mixer to show scene-specific audio
     loadAudioSources();
+    showToast('scene', `Scene changed to ${data.sceneName}`, { severity: 'info', title: 'Scene changed' });
   });
   
   obs.on('SceneListChanged', () => {
@@ -1258,11 +1383,17 @@ function setupOBSEventListeners() {
   // Stream events
   obs.on('StreamStateChanged', (data) => {
     updateStreamButton(data.outputActive);
+    const severity = data.outputActive ? 'success' : 'info';
+    const message = data.outputActive ? 'Streaming started' : 'Streaming stopped';
+    showToast('stream', message, { severity, title: 'Streaming' });
   });
   
   // Recording events
   obs.on('RecordStateChanged', (data) => {
     updateRecordButton(data.outputActive);
+    const severity = data.outputActive ? 'success' : 'info';
+    const message = data.outputActive ? 'Recording started' : 'Recording stopped';
+    showToast('record', message, { severity, title: 'Recording' });
   });
   
   // Studio mode events

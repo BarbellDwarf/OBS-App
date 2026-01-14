@@ -355,6 +355,43 @@
 
         <div class="panel">
           <div class="panel-header">
+            <h2><i class="fas fa-bell"></i> Notifications</h2>
+          </div>
+          <div class="panel-body notifications-panel">
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-dnd">
+              <span>Do Not Disturb</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-connection" checked>
+              <span>Connection</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-stream" checked>
+              <span>Streaming</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-record" checked>
+              <span>Recording</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-scene" checked>
+              <span>Scenes</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="notify-error" checked>
+              <span>Errors</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 
+          Recordings panel removed - OBS WebSocket doesn't provide recording list functionality
+          Code preserved for potential future use if WebSocket protocol adds this feature
+        -->
+        <!-- 
+        <div class="panel">
+          <div class="panel-header">
             <h2><i class="fas fa-folder-open"></i> Recordings</h2>
             <button class="btn-icon" id="refresh-recordings" title="Refresh">
               <i class="fas fa-sync"></i>
@@ -387,6 +424,7 @@
     </div>
   </div>
 
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
   <!-- Settings / Preferences Panel -->
   <div id="settings-modal" class="modal-overlay" style="display: none;">
     <div class="modal-dialog wide">
