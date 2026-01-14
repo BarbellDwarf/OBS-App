@@ -47,13 +47,65 @@ class OBSWebSocketWrapper {
 const MIN_DB = -60;  // Minimum dB level (silent/very quiet)
 const MAX_DB = 0;    // Maximum dB level (peak/clipping)
 const DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
+const DEFAULT_PEAK_THRESHOLD_DB = -5;  // dB level for peak indicator (red)
+const MIN_STATS_INTERVAL_MS = 250;
+// Settings defaults
+const SETTINGS_KEY = 'obsPreferences';
+const SETTINGS_VERSION = 1;
+const DEFAULT_SETTINGS = {
+  version: SETTINGS_VERSION,
+  statsIntervalMs: 1000,
+  syncIntervalMs: 1000,
+  minDb: -60,
+  maxDb: 0,
+  theme: {
+    mode: 'dark',
+    accent: '#0084ff'
+  },
+  autoReconnect: {
+    enabled: true,
+    delayMs: 2000,
+    jitterMs: 500,
+    maxAttempts: 5
+  },
+  defaultConnectionName: '',
+  shortcuts: {
+    toggleConnect: 'Ctrl+Shift+C',
+    toggleStream: 'Ctrl+Shift+S',
+    toggleRecord: 'Ctrl+Shift+R',
+    toggleStudioMode: 'Ctrl+Shift+M',
+    triggerTransition: 'Ctrl+Shift+T'
+  }
+};
+
+// Audio meter constants (mutable from settings)
+let MIN_DB = DEFAULT_SETTINGS.minDb;  // Minimum dB level (silent/very quiet)
+let MAX_DB = DEFAULT_SETTINGS.maxDb;    // Maximum dB level (peak/clipping)
+let DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
 const PEAK_THRESHOLD_DB = -5;  // dB level for peak indicator (red)
+const FILTER_CROP_MAX = 3840; // 4K UHD width; bounds typical HD/4K frame sizes
+let toastContainer = null;
+let preferences = { ...DEFAULT_SETTINGS };
 
 let obs = null;
 let isConnected = false;
 let isStudioMode = false;
 let currentScene = null;
 let statsInterval = null;
+let statsConfig = {
+  intervalMs: 1000,
+  clipThresholdDb: DEFAULT_PEAK_THRESHOLD_DB,
+  dropAlertPercent: 5,
+  dropWarnPercent: 1.5,
+  congestionWarnPercent: 10,
+  congestionBadPercent: 25
+};
+let dropHistory = [];
+let lastStreamBytes = null;
+let lastBytesTimestamp = null;
+let streamStartTime = null;
+let recordStartTime = null;
+let lastDropPercent = 0;
 let audioLevelIntervals = {};
 let syncInterval = null; // For bidirectional sync
 let isUserInteractingWithTransition = false; // Prevent sync from overwriting user changes
@@ -75,6 +127,16 @@ const DEFAULT_HOTKEY_SETTINGS = {
   }
 };
 const SPECIAL_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Escape', 'Enter', 'Tab'];
+let lastConnectionDetails = null;
+let autoReconnectTimeout = null;
+let userInitiatedDisconnect = false;
+let reconnectAttempts = 0;
+let sceneThumbnails = {};
+let thumbnailQueue = [];
+let activeThumbnailRequests = 0;
+let thumbnailRefreshInterval = null;
+let thumbnailQueueSet = new Set();
+const DEFAULT_THUMBNAIL_INTERVAL = 10; // seconds
 
 // DOM Elements - with null checks for missing elements
 const elements = {
@@ -101,11 +163,19 @@ const elements = {
   transitionSelect: document.getElementById('transition-select'),
   transitionDuration: document.getElementById('transition-duration'),
   streamTime: document.getElementById('stream-time'),
+  recordTime: document.getElementById('record-time'),
   fpsValue: document.getElementById('fps-value'),
   cpuValue: document.getElementById('cpu-value'),
   memoryValue: document.getElementById('memory-value'),
   bitrateValue: document.getElementById('bitrate-value'),
   droppedFrames: document.getElementById('dropped-frames'),
+  bytesSent: document.getElementById('bytes-sent'),
+  bytesReceived: document.getElementById('bytes-received'),
+  networkHealth: document.getElementById('network-health'),
+  dropTrend: document.getElementById('drop-trend'),
+  statsIntervalInput: document.getElementById('stats-interval-input'),
+  clipThresholdInput: document.getElementById('clip-threshold-input'),
+  dropAlertInput: document.getElementById('drop-alert-input'),
   savedConnections: document.getElementById('saved-connections'),
   saveConnectionBtn: document.getElementById('save-connection-btn'),
   deleteConnectionBtn: document.getElementById('delete-connection-btn'),
@@ -120,6 +190,312 @@ const elements = {
 };
 
 let hotkeySettings = null;
+  toastContainer: document.getElementById('toast-container'),
+  notifyDnd: document.getElementById('notify-dnd'),
+  notifyConnection: document.getElementById('notify-connection'),
+  notifyStream: document.getElementById('notify-stream'),
+  notifyRecord: document.getElementById('notify-record'),
+  notifyScene: document.getElementById('notify-scene'),
+  notifyError: document.getElementById('notify-error')
+};
+
+const notificationDefaults = {
+  dnd: false,
+  connection: true,
+  stream: true,
+  record: true,
+  scene: true,
+  error: true
+};
+
+let notificationSettings = { ...notificationDefaults };
+const lastToastTimestamps = {};
+  recordingsList: document.getElementById('recordings-list'),
+  refreshRecordings: document.getElementById('refresh-recordings'),
+  layoutPresetSelect: document.getElementById('layout-preset-select'),
+  saveLayoutPresetBtn: document.getElementById('save-layout-preset'),
+  deleteLayoutPresetBtn: document.getElementById('delete-layout-preset'),
+  resetLayoutPresetBtn: document.getElementById('reset-layout-preset'),
+  layoutDensitySelect: document.getElementById('layout-density-select'),
+  sidebarLeftWidth: document.getElementById('sidebar-left-width'),
+  sidebarRightWidth: document.getElementById('sidebar-right-width')
+};
+
+const DEFAULT_LAYOUT_PRESETS = {
+  expanded: { id: 'expanded', name: 'Expanded', density: 'expanded', sidebarLeft: 280, sidebarRight: 300 },
+  compact: { id: 'compact', name: 'Compact', density: 'compact', sidebarLeft: 240, sidebarRight: 240 }
+};
+
+const LAYOUT_PRESETS_KEY = 'obsLayoutPresets';
+const ACTIVE_LAYOUT_PRESET_KEY = 'obsActiveLayoutPreset';
+let layoutPresets = { ...DEFAULT_LAYOUT_PRESETS };
+
+const LAYOUT_LIMITS = {
+  min: 200,
+  max: 420
+  openSettingsBtn: document.getElementById('open-settings-btn'),
+  settingsModal: document.getElementById('settings-modal'),
+  settingsCloseBtn: document.getElementById('settings-close-btn'),
+  settingsCancelBtn: document.getElementById('settings-cancel-btn'),
+  settingsSaveBtn: document.getElementById('settings-save-btn'),
+  settingsStatsInterval: document.getElementById('settings-stats-interval'),
+  settingsSyncInterval: document.getElementById('settings-sync-interval'),
+  settingsMinDb: document.getElementById('settings-min-db'),
+  settingsMaxDb: document.getElementById('settings-max-db'),
+  settingsAccent: document.getElementById('settings-accent'),
+  settingsThemeMode: document.getElementById('settings-theme-mode'),
+  settingsAutoReconnect: document.getElementById('settings-auto-reconnect'),
+  settingsReconnectDelay: document.getElementById('settings-reconnect-delay'),
+  settingsReconnectJitter: document.getElementById('settings-reconnect-jitter'),
+  settingsReconnectAttempts: document.getElementById('settings-reconnect-attempts'),
+  settingsDefaultConnection: document.getElementById('settings-default-connection'),
+  shortcutInputs: document.querySelectorAll('.shortcut-input'),
+  shortcutJson: document.getElementById('shortcut-json'),
+  shortcutResetBtn: document.getElementById('shortcut-reset-btn'),
+  shortcutExportBtn: document.getElementById('shortcut-export-btn'),
+  shortcutImportBtn: document.getElementById('shortcut-import-btn')
+  refreshScenes: document.getElementById('refresh-scenes'),
+  thumbnailToggle: document.getElementById('thumbnail-toggle'),
+  thumbnailInterval: document.getElementById('thumbnail-interval')
+};
+
+// Preferences helpers
+function loadPreferences() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...stored,
+      theme: { ...DEFAULT_SETTINGS.theme, ...(stored.theme || {}) },
+      autoReconnect: { ...DEFAULT_SETTINGS.autoReconnect, ...(stored.autoReconnect || {}) },
+      shortcuts: { ...DEFAULT_SETTINGS.shortcuts, ...(stored.shortcuts || {}) }
+    };
+    merged.version = SETTINGS_VERSION;
+    return merged;
+  } catch (e) {
+    console.warn('Failed to load preferences, using defaults', e);
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function savePreferences(nextPrefs) {
+  preferences = { ...preferences, ...nextPrefs };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(preferences));
+}
+
+function applyPreferences() {
+  MIN_DB = preferences.minDb;
+  MAX_DB = preferences.maxDb;
+  DB_RANGE = Math.max(1, MAX_DB - MIN_DB);
+
+  // Theme
+  const root = document.documentElement;
+  const accent = preferences.theme?.accent || DEFAULT_SETTINGS.theme.accent;
+  root.style.setProperty('--primary-color', accent);
+  root.style.setProperty('--accent-color', accent);
+  if (preferences.theme?.mode === 'dim') {
+    root.style.setProperty('--dark-bg', '#1b1b1b');
+    root.style.setProperty('--darker-bg', '#121212');
+    root.style.setProperty('--panel-bg', '#1f1f1f');
+  } else {
+    root.style.setProperty('--dark-bg', '#1e1e1e');
+    root.style.setProperty('--darker-bg', '#141414');
+    root.style.setProperty('--panel-bg', '#252525');
+  }
+}
+
+function populateSettingsUI() {
+  if (!elements.settingsModal) return;
+  elements.settingsStatsInterval.value = preferences.statsIntervalMs;
+  elements.settingsSyncInterval.value = preferences.syncIntervalMs;
+  elements.settingsMinDb.value = preferences.minDb;
+  elements.settingsMaxDb.value = preferences.maxDb;
+  elements.settingsAccent.value = preferences.theme?.accent || DEFAULT_SETTINGS.theme.accent;
+  elements.settingsThemeMode.value = preferences.theme?.mode || DEFAULT_SETTINGS.theme.mode;
+  elements.settingsAutoReconnect.checked = !!preferences.autoReconnect?.enabled;
+  elements.settingsReconnectDelay.value = preferences.autoReconnect?.delayMs;
+  elements.settingsReconnectJitter.value = preferences.autoReconnect?.jitterMs;
+  elements.settingsReconnectAttempts.value = preferences.autoReconnect?.maxAttempts;
+  updateShortcutInputsFromPreferences();
+  updateShortcutJsonTextarea();
+  refreshDefaultConnectionOptions();
+}
+
+function showSettingsModal() {
+  populateSettingsUI();
+  elements.settingsModal.style.display = 'flex';
+}
+
+function hideSettingsModal() {
+  if (elements.settingsModal) elements.settingsModal.style.display = 'none';
+}
+
+function updateShortcutInputsFromPreferences() {
+  if (!elements.shortcutInputs) return;
+  elements.shortcutInputs.forEach(input => {
+    const action = input.dataset.action;
+    input.value = preferences.shortcuts[action] || '';
+  });
+}
+
+function updateShortcutJsonTextarea() {
+  if (elements.shortcutJson) {
+    const source = (elements.settingsModal && elements.settingsModal.style.display !== 'none')
+      ? readShortcutsFromInputs()
+      : preferences.shortcuts;
+    elements.shortcutJson.value = JSON.stringify(source, null, 2);
+  }
+}
+
+function collectSettingsFromUI() {
+  const next = { ...preferences };
+  const statsInterval = parseInt(elements.settingsStatsInterval.value, 10);
+  const syncInterval = parseInt(elements.settingsSyncInterval.value, 10);
+  let minDb = parseInt(elements.settingsMinDb.value, 10);
+  let maxDb = parseInt(elements.settingsMaxDb.value, 10);
+  if (Number.isNaN(minDb)) minDb = DEFAULT_SETTINGS.minDb;
+  if (Number.isNaN(maxDb)) maxDb = DEFAULT_SETTINGS.maxDb;
+  if (minDb >= maxDb) {
+    alert('Max dB must be greater than min dB. Please adjust and try again.');
+    return null;
+  }
+  next.statsIntervalMs = Math.max(500, statsInterval || DEFAULT_SETTINGS.statsIntervalMs);
+  next.syncIntervalMs = Math.max(500, syncInterval || DEFAULT_SETTINGS.syncIntervalMs);
+  next.minDb = minDb;
+  next.maxDb = maxDb;
+  next.theme = {
+    mode: elements.settingsThemeMode.value || DEFAULT_SETTINGS.theme.mode,
+    accent: elements.settingsAccent.value || DEFAULT_SETTINGS.theme.accent
+  };
+  next.autoReconnect = {
+    enabled: !!elements.settingsAutoReconnect.checked,
+    delayMs: Math.max(500, parseInt(elements.settingsReconnectDelay.value, 10) || DEFAULT_SETTINGS.autoReconnect.delayMs),
+    jitterMs: Math.max(0, parseInt(elements.settingsReconnectJitter.value, 10) || DEFAULT_SETTINGS.autoReconnect.jitterMs),
+    maxAttempts: Math.max(1, parseInt(elements.settingsReconnectAttempts.value, 10) || DEFAULT_SETTINGS.autoReconnect.maxAttempts)
+  };
+  next.defaultConnectionName = elements.settingsDefaultConnection.value || '';
+  next.shortcuts = readShortcutsFromInputs();
+  return next;
+}
+
+function refreshDefaultConnectionOptions() {
+  if (!elements.settingsDefaultConnection) return;
+  const connections = getSavedConnections();
+  elements.settingsDefaultConnection.innerHTML = '<option value="">None</option>';
+  connections.forEach(conn => {
+    const opt = document.createElement('option');
+    opt.value = conn.name;
+    opt.textContent = conn.name;
+    elements.settingsDefaultConnection.appendChild(opt);
+  });
+  elements.settingsDefaultConnection.value = preferences.defaultConnectionName || '';
+}
+
+function normalizeShortcutFromEvent(event) {
+  const parts = [];
+  if (event.ctrlKey || event.metaKey) parts.push('Ctrl');
+  if (event.shiftKey) parts.push('Shift');
+  if (event.altKey) parts.push('Alt');
+  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  parts.push(key);
+  return parts.join('+');
+}
+
+function handleShortcutInputKeydown(e) {
+  e.preventDefault();
+  const combo = normalizeShortcutFromEvent(e);
+  e.target.value = combo;
+}
+
+function readShortcutsFromInputs() {
+  const next = { ...preferences.shortcuts };
+  if (!elements.shortcutInputs) return next;
+  elements.shortcutInputs.forEach(input => {
+    const action = input.dataset.action;
+    if (action && input.value.trim()) {
+      next[action] = input.value.trim();
+    }
+  });
+  return next;
+}
+
+function parseShortcutJsonTextarea() {
+  if (!elements.shortcutJson || !elements.shortcutJson.value.trim()) return null;
+  try {
+    const parsed = JSON.parse(elements.shortcutJson.value);
+    return parsed;
+  } catch (e) {
+    alert('Invalid JSON for shortcuts. Expect an object like {"toggleStream": "Ctrl+Shift+S"}.');
+    return null;
+  }
+}
+
+function buildNormalizedShortcutMap() {
+  const map = {};
+  Object.entries(preferences.shortcuts || {}).forEach(([action, combo]) => {
+    if (combo) {
+      map[combo.toUpperCase()] = action;
+    }
+  });
+  return map;
+}
+
+function shouldBlockShortcuts(event) {
+  const target = event.target;
+  if (!target) return false;
+  if (target.closest('[data-block-shortcuts]')) return true;
+  if (isInteractiveElement(target)) return true;
+  if (elements.settingsModal && elements.settingsModal.style.display !== 'none') {
+    return true;
+  }
+  return false;
+}
+
+function isInteractiveElement(target) {
+  const tag = target.tagName?.toLowerCase();
+  if ((['input', 'textarea', 'select', 'button'].includes(tag) || target.isContentEditable) && !target.classList.contains('shortcut-input')) {
+    return true;
+  }
+  return false;
+}
+
+function executeShortcutAction(action) {
+  switch (action) {
+    case 'toggleConnect':
+      handleConnect();
+      break;
+    case 'toggleStream':
+      toggleStreaming();
+      break;
+    case 'toggleRecord':
+      toggleRecording();
+      break;
+    case 'toggleStudioMode':
+      if (elements.studioModeToggle) {
+        elements.studioModeToggle.checked = !elements.studioModeToggle.checked;
+        toggleStudioMode();
+      }
+      break;
+    case 'triggerTransition':
+      performTransition();
+      break;
+    default:
+      break;
+  }
+}
+
+function registerGlobalShortcuts() {
+  document.addEventListener('keydown', (event) => {
+    if (shouldBlockShortcuts(event)) return;
+    const combo = normalizeShortcutFromEvent(event).toUpperCase();
+    const map = buildNormalizedShortcutMap();
+    const action = map[combo];
+    if (action) {
+      event.preventDefault();
+      executeShortcutAction(action);
+    }
+  });
+}
 
 // Initialize
 async function init() {
@@ -160,6 +536,10 @@ async function init() {
     hotkeySettings = loadHotkeySettings();
     applyHotkeySettingsToUI();
     registerHotkeyInputHandlers();
+    loadNotificationSettings();
+    setupNotificationSettingsListeners();
+    loadStatsSettings();
+    initializeLayoutPresets();
     console.log('OBS Remote Control initialized successfully');
   } catch (error) {
     console.error('Initialization error:', error);
@@ -174,6 +554,9 @@ function setupEventListeners() {
   if (elements.recordBtn) elements.recordBtn.addEventListener('click', toggleRecording);
   if (elements.pauseRecordBtn) elements.pauseRecordBtn.addEventListener('click', pauseRecording);
   if (elements.virtualCamBtn) elements.virtualCamBtn.addEventListener('click', toggleVirtualCamera);
+  if (elements.statsIntervalInput) elements.statsIntervalInput.addEventListener('change', handleStatsSettingsChange);
+  if (elements.clipThresholdInput) elements.clipThresholdInput.addEventListener('change', handleStatsSettingsChange);
+  if (elements.dropAlertInput) elements.dropAlertInput.addEventListener('change', handleStatsSettingsChange);
   if (elements.studioModeToggle) elements.studioModeToggle.addEventListener('change', toggleStudioMode);
   if (elements.transitionBtn) elements.transitionBtn.addEventListener('click', performTransition);
   if (elements.transitionSelect) {
@@ -466,6 +849,93 @@ async function handleHotkey(event) {
     event.preventDefault();
     await toggleFocusedMute();
   }
+  if (elements.refreshRecordings) elements.refreshRecordings.addEventListener('click', loadRecordings);
+  if (elements.layoutPresetSelect) elements.layoutPresetSelect.addEventListener('change', (e) => applyLayoutPreset(e.target.value));
+  if (elements.layoutDensitySelect) elements.layoutDensitySelect.addEventListener('change', () => applyLayoutFromInputs(true));
+  if (elements.sidebarLeftWidth) elements.sidebarLeftWidth.addEventListener('input', () => applyLayoutFromInputs(true));
+  if (elements.sidebarRightWidth) elements.sidebarRightWidth.addEventListener('input', () => applyLayoutFromInputs(true));
+  if (elements.saveLayoutPresetBtn) elements.saveLayoutPresetBtn.addEventListener('click', saveCustomLayoutPreset);
+  if (elements.deleteLayoutPresetBtn) elements.deleteLayoutPresetBtn.addEventListener('click', deleteSelectedLayoutPreset);
+  if (elements.resetLayoutPresetBtn) elements.resetLayoutPresetBtn.addEventListener('click', resetLayoutPresetsToDefault);
+
+  if (elements.openSettingsBtn) elements.openSettingsBtn.addEventListener('click', showSettingsModal);
+  if (elements.settingsCloseBtn) elements.settingsCloseBtn.addEventListener('click', hideSettingsModal);
+  if (elements.settingsCancelBtn) elements.settingsCancelBtn.addEventListener('click', hideSettingsModal);
+  if (elements.settingsSaveBtn) elements.settingsSaveBtn.addEventListener('click', () => {
+    const next = collectSettingsFromUI();
+    if (!next) return;
+    preferences = next;
+    savePreferences(preferences);
+    applyPreferences();
+    updateShortcutJsonTextarea();
+    if (isConnected) {
+      startStatsPolling();
+      startBidirectionalSync();
+    }
+    hideSettingsModal();
+  });
+  if (elements.shortcutInputs) {
+    elements.shortcutInputs.forEach(input => {
+      input.addEventListener('keydown', handleShortcutInputKeydown);
+      input.addEventListener('focus', (e) => e.target.select());
+    });
+  }
+  if (elements.shortcutResetBtn) {
+    elements.shortcutResetBtn.addEventListener('click', () => {
+      elements.shortcutInputs.forEach(input => {
+        const action = input.dataset.action;
+        input.value = DEFAULT_SETTINGS.shortcuts[action] || '';
+      });
+      updateShortcutJsonTextarea();
+    });
+  }
+  if (elements.shortcutExportBtn) {
+    elements.shortcutExportBtn.addEventListener('click', async () => {
+      updateShortcutJsonTextarea();
+      try {
+        await navigator.clipboard.writeText(elements.shortcutJson.value);
+        alert('Shortcut map copied to clipboard.');
+      } catch (e) {
+        if (elements.shortcutJson) {
+          elements.shortcutJson.focus();
+          elements.shortcutJson.select();
+        }
+        alert('Clipboard unavailable. Please copy the JSON manually from the field.');
+      }
+    });
+  }
+  if (elements.shortcutImportBtn) {
+    elements.shortcutImportBtn.addEventListener('click', () => {
+      const parsed = parseShortcutJsonTextarea();
+      if (parsed) {
+        Object.keys(DEFAULT_SETTINGS.shortcuts).forEach(action => {
+          if (parsed[action]) {
+            const input = document.querySelector(`.shortcut-input[data-action="${action}"]`);
+            if (input) input.value = parsed[action];
+          }
+        });
+        updateShortcutJsonTextarea();
+      }
+    });
+  }
+  if (elements.refreshScenes) elements.refreshScenes.addEventListener('click', () => {
+    clearSceneThumbnails(true);
+    loadScenes();
+  });
+  if (elements.thumbnailToggle) elements.thumbnailToggle.addEventListener('change', () => {
+    saveSettings();
+    if (isThumbnailsEnabled()) {
+      startThumbnailRefresh();
+      refreshAllThumbnails(true);
+    } else {
+      stopThumbnailRefresh();
+      clearSceneThumbnails(false);
+    }
+  });
+  if (elements.thumbnailInterval) elements.thumbnailInterval.addEventListener('change', () => {
+    saveSettings();
+    startThumbnailRefresh();
+  });
 }
 
 // Connection Management Functions
@@ -484,10 +954,20 @@ function loadConnectionsList() {
   
   connections.forEach((conn, index) => {
     const option = document.createElement('option');
-    option.value = index;
+    option.value = index.toString();
     option.textContent = conn.name;
     elements.savedConnections.appendChild(option);
   });
+  refreshDefaultConnectionOptions();
+  
+  // Auto-select default connection
+  if (preferences.defaultConnectionName) {
+    const idx = connections.findIndex(c => c.name === preferences.defaultConnectionName);
+    if (idx >= 0) {
+      elements.savedConnections.value = idx.toString();
+      loadSavedConnection();
+    }
+  }
 }
 
 function loadSavedConnection() {
@@ -510,12 +990,217 @@ function loadSavedConnection() {
   }
 }
 
+// Layout presets
+function loadStoredLayoutPresets() {
+  let presets = { ...DEFAULT_LAYOUT_PRESETS };
+  const stored = localStorage.getItem(LAYOUT_PRESETS_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      Object.values(parsed || {}).forEach((preset) => {
+        const sanitized = sanitizePreset(preset);
+        if (sanitized) {
+          presets[sanitized.id] = sanitized;
+        }
+      });
+    } catch (err) {
+      console.warn('Failed to parse stored layout presets', err);
+    }
+  }
+  return presets;
+}
+
+function saveLayoutPresets(presets) {
+  localStorage.setItem(LAYOUT_PRESETS_KEY, JSON.stringify(presets));
+}
+
+function populateLayoutPresetSelect() {
+  if (!elements.layoutPresetSelect) return;
+  elements.layoutPresetSelect.innerHTML = '';
+
+  const defaultsOrder = ['expanded', 'compact'];
+  const sorted = Object.values(layoutPresets).sort((a, b) => {
+    const aIndex = defaultsOrder.indexOf(a.id);
+    const bIndex = defaultsOrder.indexOf(b.id);
+    if (aIndex !== -1 || bIndex !== -1) {
+      return (aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex);
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  sorted.forEach((preset) => {
+    const option = document.createElement('option');
+    option.value = preset.id;
+    option.textContent = preset.name;
+    elements.layoutPresetSelect.appendChild(option);
+  });
+}
+
+function setDensityClass(density) {
+  const body = document.body;
+  if (!body) return;
+  body.classList.remove('density-compact', 'density-expanded');
+  body.classList.add(density === 'compact' ? 'density-compact' : 'density-expanded');
+}
+
+function clampSidebar(value) {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) return LAYOUT_LIMITS.min;
+  return Math.min(LAYOUT_LIMITS.max, Math.max(LAYOUT_LIMITS.min, parsed));
+}
+
+function sanitizePreset(preset) {
+  if (!preset || typeof preset !== 'object') return null;
+  const density = preset.density === 'compact' ? 'compact' : 'expanded';
+  const sidebarLeft = clampSidebar(preset.sidebarLeft || LAYOUT_LIMITS.min);
+  const sidebarRight = clampSidebar(preset.sidebarRight || LAYOUT_LIMITS.min);
+  const id = preset.id && typeof preset.id === 'string' ? preset.id : null;
+  const name = preset.name && typeof preset.name === 'string' ? preset.name : null;
+  if (!id || !name) return null;
+  return { id, name, density, sidebarLeft, sidebarRight };
+}
+
+function applyLayoutPreset(presetId) {
+  if (!elements.layoutPresetSelect) return;
+  if (presetId === '__custom') {
+    applyLayoutFromInputs(false);
+    localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, '__custom');
+    return;
+  }
+
+  const preset = sanitizePreset(layoutPresets[presetId]) || DEFAULT_LAYOUT_PRESETS.expanded;
+  const density = preset.density || 'expanded';
+  const leftWidth = preset.sidebarLeft || 280;
+  const rightWidth = preset.sidebarRight || 300;
+
+  document.documentElement.style.setProperty('--sidebar-left', `${leftWidth}px`);
+  document.documentElement.style.setProperty('--sidebar-right', `${rightWidth}px`);
+  setDensityClass(density);
+
+  if (elements.layoutDensitySelect) elements.layoutDensitySelect.value = density;
+  if (elements.sidebarLeftWidth) elements.sidebarLeftWidth.value = leftWidth;
+  if (elements.sidebarRightWidth) elements.sidebarRightWidth.value = rightWidth;
+
+  if (elements.layoutPresetSelect.value !== presetId) {
+    const optionExists = Array.from(elements.layoutPresetSelect.options).some(opt => opt.value === presetId);
+    if (optionExists) {
+      elements.layoutPresetSelect.value = presetId;
+    }
+  }
+
+  localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, presetId);
+}
+
+function applyLayoutFromInputs(markCustom) {
+  const density = elements.layoutDensitySelect ? elements.layoutDensitySelect.value : 'expanded';
+  const leftWidth = elements.sidebarLeftWidth ? clampSidebar(elements.sidebarLeftWidth.value) : 280;
+  const rightWidth = elements.sidebarRightWidth ? clampSidebar(elements.sidebarRightWidth.value) : 300;
+
+  document.documentElement.style.setProperty('--sidebar-left', `${leftWidth}px`);
+  document.documentElement.style.setProperty('--sidebar-right', `${rightWidth}px`);
+  setDensityClass(density);
+
+  if (markCustom && elements.layoutPresetSelect) {
+    let customOption = elements.layoutPresetSelect.querySelector('option[value="__custom"]');
+    if (!customOption) {
+      customOption = document.createElement('option');
+      customOption.value = '__custom';
+      customOption.textContent = 'Custom (unsaved)';
+      elements.layoutPresetSelect.appendChild(customOption);
+    }
+    elements.layoutPresetSelect.value = '__custom';
+    localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, '__custom');
+  } else if (elements.layoutPresetSelect && elements.layoutPresetSelect.value === '__custom') {
+    localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, '__custom');
+  }
+}
+
+function saveCustomLayoutPreset() {
+  if (!elements.layoutPresetSelect) return;
+  showConnectionNameDialog('New Preset', (name) => {
+    if (!name) return;
+
+    const density = elements.layoutDensitySelect ? elements.layoutDensitySelect.value : 'expanded';
+    const leftWidth = elements.sidebarLeftWidth ? clampSidebar(elements.sidebarLeftWidth.value) : 280;
+    const rightWidth = elements.sidebarRightWidth ? clampSidebar(elements.sidebarRightWidth.value) : 300;
+
+    const id = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!id) return;
+    if (['expanded', 'compact', '__custom'].includes(id)) {
+      notifyUser('Preset name is reserved (expanded, compact). Choose another name.');
+      return;
+    }
+
+    layoutPresets[id] = {
+      id,
+      name: name.trim(),
+      density,
+      sidebarLeft: leftWidth,
+      sidebarRight: rightWidth
+    };
+
+    saveLayoutPresets(layoutPresets);
+    populateLayoutPresetSelect();
+    applyLayoutPreset(id);
+  }, { title: 'Save Layout Preset', label: 'Preset Name:' });
+}
+
+function deleteSelectedLayoutPreset() {
+  if (!elements.layoutPresetSelect) return;
+  const selectedId = elements.layoutPresetSelect.value;
+  if (!selectedId || selectedId === '__custom') {
+    notifyUser('Only saved presets can be deleted. Select a saved preset first.');
+    return;
+  }
+  if (DEFAULT_LAYOUT_PRESETS[selectedId]) {
+    notifyUser('Default presets cannot be deleted.');
+    return;
+  }
+  delete layoutPresets[selectedId];
+  saveLayoutPresets(layoutPresets);
+  populateLayoutPresetSelect();
+  applyLayoutPreset('expanded');
+  localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, 'expanded');
+}
+
+function resetLayoutPresetsToDefault() {
+  layoutPresets = { ...DEFAULT_LAYOUT_PRESETS };
+  saveLayoutPresets(layoutPresets);
+  populateLayoutPresetSelect();
+  applyLayoutPreset('expanded');
+  localStorage.setItem(ACTIVE_LAYOUT_PRESET_KEY, 'expanded');
+}
+
+function initializeLayoutPresets() {
+  layoutPresets = loadStoredLayoutPresets();
+  populateLayoutPresetSelect();
+  const activePresetId = localStorage.getItem(ACTIVE_LAYOUT_PRESET_KEY) || 'expanded';
+  applyLayoutPreset(layoutPresets[activePresetId] ? activePresetId : 'expanded');
+}
+
+function notifyUser(message) {
+  if (elements.statusText) {
+    const previous = elements.statusText.textContent;
+    elements.statusText.textContent = message;
+    setTimeout(() => {
+      elements.statusText.textContent = previous;
+    }, 3000);
+  } else {
+    alert(message);
+  }
+}
+
 // Custom dialog function (replaces prompt() which doesn't work in Electron renderer)
-function showConnectionNameDialog(defaultValue, callback) {
+function showConnectionNameDialog(defaultValue, callback, options = {}) {
   const dialog = document.getElementById('connection-name-dialog');
   const input = document.getElementById('connection-name-input');
   const saveBtn = document.getElementById('dialog-save-btn');
   const cancelBtn = document.getElementById('dialog-cancel-btn');
+  const titleEl = dialog.querySelector('.modal-header h3');
+  const labelEl = dialog.querySelector('label[for="connection-name-input"]');
+
+  if (titleEl) titleEl.textContent = options.title || 'Save Connection';
+  if (labelEl) labelEl.textContent = options.label || 'Connection Name:';
   
   // Set default value
   input.value = defaultValue;
@@ -609,6 +1294,7 @@ function saveCurrentConnection() {
     
     saveSavedConnections(connections);
     loadConnectionsList();
+    refreshDefaultConnectionOptions();
     
     // Select the saved connection
     const newIndex = connections.findIndex(c => c.name === connectionName);
@@ -635,6 +1321,7 @@ function deleteCurrentConnection() {
   connections.splice(selectedIndex, 1);
   saveSavedConnections(connections);
   loadConnectionsList();
+  refreshDefaultConnectionOptions();
   
   // Reset to new connection
   elements.savedConnections.value = '';
@@ -647,7 +1334,9 @@ function deleteCurrentConnection() {
 function saveSettings() {
   const settings = {
     host: elements.wsHost.value,
-    port: elements.wsPort.value
+    port: elements.wsPort.value,
+    thumbnailsEnabled: elements.thumbnailToggle ? elements.thumbnailToggle.checked : true,
+    thumbnailInterval: getThumbnailIntervalSeconds()
   };
   localStorage.setItem('obsSettings', JSON.stringify(settings));
 }
@@ -656,6 +1345,159 @@ function loadSettings() {
   const settings = JSON.parse(localStorage.getItem('obsSettings') || '{}');
   if (settings.host) elements.wsHost.value = settings.host;
   if (settings.port) elements.wsPort.value = settings.port;
+  // Thumbnail preferences
+  if (elements.thumbnailToggle) {
+    elements.thumbnailToggle.checked = settings.thumbnailsEnabled !== false;
+  }
+  if (elements.thumbnailInterval) {
+    const interval = settings.thumbnailInterval || DEFAULT_THUMBNAIL_INTERVAL;
+    elements.thumbnailInterval.value = interval;
+  }
+}
+
+function clearAutoReconnectTimer() {
+  if (autoReconnectTimeout) {
+    clearTimeout(autoReconnectTimeout);
+    autoReconnectTimeout = null;
+  }
+}
+
+function scheduleAutoReconnect(reason = '') {
+  if (!preferences.autoReconnect?.enabled || userInitiatedDisconnect) return;
+  if (!lastConnectionDetails) return;
+  const maxAttempts = preferences.autoReconnect.maxAttempts || DEFAULT_SETTINGS.autoReconnect.maxAttempts;
+  if (reconnectAttempts >= maxAttempts) return;
+  const baseDelay = Math.max(500, preferences.autoReconnect.delayMs || DEFAULT_SETTINGS.autoReconnect.delayMs);
+  const jitter = Math.max(0, preferences.autoReconnect.jitterMs || DEFAULT_SETTINGS.autoReconnect.jitterMs);
+  const delay = baseDelay + Math.floor(Math.random() * jitter);
+  reconnectAttempts += 1;
+  clearAutoReconnectTimer();
+  autoReconnectTimeout = setTimeout(async () => {
+    try {
+      console.log(`Auto-reconnect attempt ${reconnectAttempts} (reason: ${reason || 'unknown'})`);
+      await connect(lastConnectionDetails);
+    } catch (e) {
+      console.warn('Auto-reconnect attempt failed', e);
+      scheduleAutoReconnect('retry');
+    }
+  }, delay);
+}
+
+function loadStatsSettings() {
+  const stored = JSON.parse(localStorage.getItem('obsStatsConfig') || '{}');
+  statsConfig = {
+    ...statsConfig,
+    ...stored
+  };
+  if (elements.statsIntervalInput) elements.statsIntervalInput.value = statsConfig.intervalMs;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.value = statsConfig.clipThresholdDb;
+  if (elements.dropAlertInput) elements.dropAlertInput.value = statsConfig.dropAlertPercent;
+}
+
+function handleStatsSettingsChange() {
+  const interval = parseInt(elements.statsIntervalInput?.value || statsConfig.intervalMs, 10);
+  const clip = parseFloat(elements.clipThresholdInput?.value || statsConfig.clipThresholdDb);
+  const dropAlert = parseFloat(elements.dropAlertInput?.value || statsConfig.dropAlertPercent);
+  statsConfig.intervalMs = Math.max(MIN_STATS_INTERVAL_MS, isNaN(interval) ? statsConfig.intervalMs : interval);
+  statsConfig.clipThresholdDb = isNaN(clip) ? statsConfig.clipThresholdDb : clip;
+  statsConfig.dropAlertPercent = isNaN(dropAlert) ? statsConfig.dropAlertPercent : dropAlert;
+  localStorage.setItem('obsStatsConfig', JSON.stringify(statsConfig));
+  if (isConnected) startStatsPolling(); // restart with new interval/threshold
+}
+
+function loadNotificationSettings() {
+  const stored = JSON.parse(localStorage.getItem('notificationSettings') || '{}');
+  notificationSettings = { ...notificationDefaults, ...stored };
+  if (elements.notifyDnd) elements.notifyDnd.checked = notificationSettings.dnd;
+  if (elements.notifyConnection) elements.notifyConnection.checked = notificationSettings.connection;
+  if (elements.notifyStream) elements.notifyStream.checked = notificationSettings.stream;
+  if (elements.notifyRecord) elements.notifyRecord.checked = notificationSettings.record;
+  if (elements.notifyScene) elements.notifyScene.checked = notificationSettings.scene;
+  if (elements.notifyError) elements.notifyError.checked = notificationSettings.error;
+}
+
+function saveNotificationSettings() {
+  localStorage.setItem('notificationSettings', JSON.stringify(notificationSettings));
+}
+
+function setupNotificationSettingsListeners() {
+  const bindings = [
+    { el: elements.notifyDnd, key: 'dnd' },
+    { el: elements.notifyConnection, key: 'connection' },
+    { el: elements.notifyStream, key: 'stream' },
+    { el: elements.notifyRecord, key: 'record' },
+    { el: elements.notifyScene, key: 'scene' },
+    { el: elements.notifyError, key: 'error' }
+  ];
+  bindings.forEach(({ el, key }) => {
+    if (!el) return;
+    el.addEventListener('change', () => {
+      notificationSettings[key] = el.checked;
+      saveNotificationSettings();
+    });
+  });
+}
+
+function shouldNotify(category) {
+  if (!elements.toastContainer) return false;
+  if (notificationSettings.dnd) return false;
+  return notificationSettings[category] !== false;
+}
+
+function showToast(category, message, options = {}) {
+  if (!elements.toastContainer) return;
+  if (!shouldNotify(category)) return;
+
+  const severity = options.severity || 'info';
+  const title = options.title || {
+    connection: 'Connection',
+    stream: 'Streaming',
+    record: 'Recording',
+    scene: 'Scene',
+    error: 'Error'
+  }[category] || 'Notification';
+  const key = `${category}:${message}`;
+  const now = Date.now();
+  if (lastToastTimestamps[key] && now - lastToastTimestamps[key] < 1500) {
+    return;
+  }
+  lastToastTimestamps[key] = now;
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${severity}`;
+
+  const iconMap = {
+    success: 'fa-check-circle',
+    info: 'fa-info-circle',
+    warning: 'fa-exclamation-triangle',
+    error: 'fa-times-circle'
+  };
+
+  const icon = document.createElement('i');
+  icon.className = `fas ${iconMap[severity] || iconMap.info} toast-icon`;
+
+  const content = document.createElement('div');
+  content.className = 'toast-content';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'toast-title';
+  titleEl.textContent = title;
+
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = message;
+
+  content.appendChild(titleEl);
+  content.appendChild(messageEl);
+
+  toast.appendChild(icon);
+  toast.appendChild(content);
+
+  elements.toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.remove();
+  }, options.duration || 4000);
 }
 
 // Connection handling
@@ -666,33 +1508,45 @@ async function handleConnect() {
   }
   
   if (isConnected) {
+    userInitiatedDisconnect = true;
     await disconnect();
   } else {
+    userInitiatedDisconnect = false;
+    reconnectAttempts = 0;
     await connect();
   }
 }
 
-async function connect() {
+async function connect(connectionOpts = null) {
   try {
     console.log('Attempting to connect to OBS...');
     updateConnectionStatus('connecting', 'Connecting...');
     elements.connectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
     elements.connectBtn.disabled = true;
 
-    const host = elements.wsHost.value || 'localhost';
-    const port = elements.wsPort.value || '4455';
-    const password = elements.wsPassword.value || '';
+    const host = connectionOpts?.host || elements.wsHost.value || 'localhost';
+    const port = connectionOpts?.port || elements.wsPort.value || '4455';
+    const password = connectionOpts?.password || elements.wsPassword.value || '';
+
+    lastConnectionDetails = { host, port, password };
+    elements.wsHost.value = host;
+    elements.wsPort.value = port;
+    elements.wsPassword.value = password;
+    userInitiatedDisconnect = false;
 
     console.log(`Connecting to ws://${host}:${port}`);
     await obs.connect(`ws://${host}:${port}`, password);
     
     console.log('Connection successful!');
     isConnected = true;
+    reconnectAttempts = 0;
+    clearAutoReconnectTimer();
     updateConnectionStatus('connected', 'Connected');
     elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Disconnect';
     elements.connectBtn.disabled = false;
     elements.connectBtn.classList.remove('btn-primary');
     elements.connectBtn.classList.add('btn-danger');
+    showToast('connection', 'Connected to OBS', { severity: 'success', title: 'Connected' });
     
     saveSettings();
     await initializeOBSConnection();
@@ -701,6 +1555,9 @@ async function connect() {
     updateConnectionStatus('disconnected', 'Connection Failed');
     elements.connectBtn.innerHTML = '<i class="fas fa-plug"></i> Connect';
     elements.connectBtn.disabled = false;
+    if (!userInitiatedDisconnect) {
+      scheduleAutoReconnect('connect-failed');
+    }
     
     // Provide more detailed error message
     let errorMessage = 'Failed to connect to OBS';
@@ -711,17 +1568,21 @@ async function connect() {
       errorMessage += '\n\nMake sure:\n• OBS Studio is running\n• WebSocket server is enabled in OBS\n• Host and port are correct';
     }
     alert(errorMessage);
+    showToast('error', errorMessage, { severity: 'error', title: 'Connection failed', duration: 5000 });
   }
 }
 
 async function disconnect() {
   try {
     console.log('Disconnecting from OBS...');
+    userInitiatedDisconnect = true;
+    clearAutoReconnectTimer();
     if (obs && isConnected) {
       await obs.disconnect();
     }
     resetConnectionUI();
     console.log('Disconnected successfully');
+    showToast('connection', 'Disconnected from OBS', { severity: 'info', title: 'Disconnected' });
   } catch (error) {
     console.error('Disconnect error:', error);
     // Still reset UI even if disconnect fails
@@ -759,6 +1620,7 @@ async function initializeOBSConnection() {
       loadAudioSources(),
       loadSceneCollections(),
       loadProfiles(),
+      loadRecordings(),
       getStudioModeStatus(),
       getStreamingStatus(),
       getRecordingStatus(),
@@ -783,12 +1645,18 @@ function setupOBSEventListeners() {
   obs.on('ConnectionClosed', () => {
     console.log('Connection to OBS closed');
     resetConnectionUI();
+    showToast('connection', 'Connection to OBS closed', { severity: 'warning', title: 'Connection closed' });
+    scheduleAutoReconnect('closed');
   });
   
   obs.on('ConnectionError', (error) => {
     console.error('Connection error:', error);
     resetConnectionUI();
+    const message = 'Lost connection to OBS: ' + (error.message || 'Unknown error');
+    alert(message);
+    showToast('error', message, { severity: 'error', title: 'Connection error' });
     alert('Lost connection to OBS: ' + (error.message || 'Unknown error'));
+    scheduleAutoReconnect('error');
   });
   
   // Scene events
@@ -801,6 +1669,7 @@ function setupOBSEventListeners() {
     }
     // Refresh audio mixer to show scene-specific audio
     loadAudioSources();
+    showToast('scene', `Scene changed to ${data.sceneName}`, { severity: 'info', title: 'Scene changed' });
   });
   
   obs.on('SceneListChanged', () => {
@@ -821,11 +1690,17 @@ function setupOBSEventListeners() {
   // Stream events
   obs.on('StreamStateChanged', (data) => {
     updateStreamButton(data.outputActive);
+    const severity = data.outputActive ? 'success' : 'info';
+    const message = data.outputActive ? 'Streaming started' : 'Streaming stopped';
+    showToast('stream', message, { severity, title: 'Streaming' });
   });
   
   // Recording events
   obs.on('RecordStateChanged', (data) => {
     updateRecordButton(data.outputActive);
+    const severity = data.outputActive ? 'success' : 'info';
+    const message = data.outputActive ? 'Recording started' : 'Recording stopped';
+    showToast('record', message, { severity, title: 'Recording' });
   });
   
   // Studio mode events
@@ -903,7 +1778,7 @@ function updateAudioMeter(inputName, levelsMul) {
     if (index < activeCount) {
       bar.classList.add('active');
       // Peak indicator (red) for levels above PEAK_THRESHOLD_DB (very loud, near clipping)
-      if (dB > PEAK_THRESHOLD_DB) {
+      if (dB > statsConfig.clipThresholdDb) {
         bar.classList.add('peak');
       } else {
         bar.classList.remove('peak');
@@ -912,6 +1787,15 @@ function updateAudioMeter(inputName, levelsMul) {
       bar.classList.remove('active', 'peak');
     }
   });
+  
+  const channel = meter.closest('.audio-channel');
+  if (channel) {
+    if (dB > statsConfig.clipThresholdDb) {
+      channel.classList.add('clipping');
+    } else {
+      channel.classList.remove('clipping');
+    }
+  }
 }
 
 // Scenes
@@ -928,9 +1812,11 @@ async function loadScenes() {
     orderedScenes.forEach(scene => {
       const sceneItem = createSceneItem(scene.sceneName);
       elements.scenesList.appendChild(sceneItem);
+      queueSceneThumbnail(scene.sceneName);
     });
     
     updateActiveScene();
+    startThumbnailRefresh();
   } catch (error) {
     console.error('Failed to load scenes:', error);
     elements.scenesList.innerHTML = '<div class="empty-state">Failed to load scenes</div>';
@@ -941,12 +1827,16 @@ function createSceneItem(sceneName) {
   const item = document.createElement('div');
   item.className = 'list-item';
   item.innerHTML = `
+    <div class="scene-thumbnail">
+      <div class="thumb-placeholder loading"><i class="fas fa-image"></i></div>
+    </div>
     <div class="list-item-label">
       <i class="fas fa-image list-item-icon"></i>
       <span>${sceneName}</span>
     </div>
   `;
   item.addEventListener('click', () => setScene(sceneName));
+  item.addEventListener('mouseenter', () => queueSceneThumbnail(sceneName, true));
   item.dataset.sceneName = sceneName;
   return item;
 }
@@ -973,32 +1863,203 @@ async function setScene(sceneName) {
       // Refresh audio mixer when scene changes
       await loadAudioSources();
     }
+    queueSceneThumbnail(sceneName, true);
   } catch (error) {
     console.error('Failed to set scene:', error);
   }
 }
 
+// Scene thumbnails
+const THUMBNAIL_WIDTH = 240;
+const THUMBNAIL_HEIGHT = 135;
+const MAX_THUMBNAIL_REQUESTS = 2;
+
+function isThumbnailsEnabled() {
+  return elements.thumbnailToggle ? elements.thumbnailToggle.checked : true;
+}
+
+function getThumbnailIntervalSeconds() {
+  const raw = elements.thumbnailInterval ? parseInt(elements.thumbnailInterval.value, 10) : NaN;
+  if (!Number.isFinite(raw)) return DEFAULT_THUMBNAIL_INTERVAL;
+  return Math.min(120, Math.max(5, raw));
+}
+
+function getThumbnailIntervalMs() {
+  return getThumbnailIntervalSeconds() * 1000;
+}
+
+function stopThumbnailRefresh() {
+  if (thumbnailRefreshInterval) {
+    clearInterval(thumbnailRefreshInterval);
+    thumbnailRefreshInterval = null;
+  }
+}
+
+function startThumbnailRefresh() {
+  stopThumbnailRefresh();
+  if (!isThumbnailsEnabled()) return;
+  thumbnailRefreshInterval = setInterval(() => {
+    refreshAllThumbnails(false);
+  }, getThumbnailIntervalMs());
+}
+
+function refreshAllThumbnails(force = false) {
+  if (!isThumbnailsEnabled()) return;
+  document.querySelectorAll('#scenes-list .list-item').forEach(item => {
+    const sceneName = item.dataset.sceneName;
+    if (sceneName) {
+      queueSceneThumbnail(sceneName, force);
+    }
+  });
+}
+
+function clearSceneThumbnails(resetPlaceholders = false) {
+  sceneThumbnails = {};
+  thumbnailQueue = [];
+  activeThumbnailRequests = 0;
+  thumbnailQueueSet.clear();
+  if (resetPlaceholders) {
+    document.querySelectorAll('#scenes-list .scene-thumbnail').forEach(box => {
+      setThumbnailPlaceholder(box, true);
+    });
+  }
+}
+
+function setThumbnailPlaceholder(box, isLoading) {
+  if (!box) return;
+  const placeholder = document.createElement('div');
+  placeholder.className = 'thumb-placeholder' + (isLoading ? ' loading' : '');
+  const icon = document.createElement('i');
+  icon.className = 'fas fa-image';
+  placeholder.appendChild(icon);
+  box.replaceChildren(placeholder);
+}
+
+function queueSceneThumbnail(sceneName, force = false) {
+  if (!sceneName || !obs || !isThumbnailsEnabled()) return;
+  const now = Date.now();
+  const cadenceMs = getThumbnailIntervalMs();
+  const existing = sceneThumbnails[sceneName];
+  if (!force && existing) {
+    if (existing.status === 'loading') return;
+    if (existing.status === 'error' && existing.lastFail && now - existing.lastFail < cadenceMs) {
+      updateSceneThumbnail(sceneName);
+      return;
+    }
+    if (existing.status === 'loaded' && existing.updatedAt && now - existing.updatedAt < cadenceMs) {
+      updateSceneThumbnail(sceneName);
+      return;
+    }
+  }
+  sceneThumbnails[sceneName] = {
+    ...(existing || {}),
+    status: 'loading'
+  };
+  if (!thumbnailQueueSet.has(sceneName)) {
+    thumbnailQueueSet.add(sceneName);
+    thumbnailQueue.push(sceneName);
+  }
+  updateSceneThumbnail(sceneName);
+  processThumbnailQueue();
+}
+
+function processThumbnailQueue() {
+  while (activeThumbnailRequests < MAX_THUMBNAIL_REQUESTS && thumbnailQueue.length > 0) {
+    const sceneName = thumbnailQueue.shift();
+    if (!sceneName) continue;
+    thumbnailQueueSet.delete(sceneName);
+    activeThumbnailRequests++;
+    fetchSceneThumbnail(sceneName).finally(() => {
+      activeThumbnailRequests--;
+      processThumbnailQueue();
+    });
+  }
+}
+
+async function fetchSceneThumbnail(sceneName) {
+  try {
+    const { imageData } = await obs.call('GetSourceScreenshot', {
+      sourceName: sceneName,
+      imageFormat: 'jpeg',
+      imageCompressionQuality: 60,
+      imageWidth: THUMBNAIL_WIDTH,
+      imageHeight: THUMBNAIL_HEIGHT
+    });
+    const hasImage = !!imageData;
+    sceneThumbnails[sceneName] = {
+      status: hasImage ? 'loaded' : 'error',
+      data: hasImage ? imageData : null,
+      updatedAt: hasImage ? Date.now() : null,
+      lastFail: hasImage ? null : Date.now()
+    };
+  } catch (error) {
+    console.error('Thumbnail fetch failed for scene:', sceneName, error);
+    sceneThumbnails[sceneName] = {
+      status: 'error',
+      data: null,
+      updatedAt: null,
+      lastFail: Date.now()
+    };
+  }
+  updateSceneThumbnail(sceneName);
+}
+
+function updateSceneThumbnail(sceneName) {
+  const entry = sceneThumbnails[sceneName];
+  document.querySelectorAll('#scenes-list .list-item').forEach(item => {
+    if (item.dataset.sceneName !== sceneName) return;
+    const box = item.querySelector('.scene-thumbnail');
+    if (!box) return;
+    if (!isThumbnailsEnabled()) {
+      setThumbnailPlaceholder(box, false);
+      return;
+    }
+    if (entry && entry.status === 'loaded' && entry.data) {
+      const img = document.createElement('img');
+      img.src = `data:image/jpeg;base64,${entry.data}`;
+      img.alt = `${sceneName} thumbnail`;
+      box.replaceChildren(img);
+    } else if (entry && entry.status === 'loading') {
+      setThumbnailPlaceholder(box, true);
+    } else {
+      setThumbnailPlaceholder(box, false);
+    }
+  });
+}
+
 // Sources
 async function loadSceneSources(sceneName) {
   try {
-    const { sceneItems } = await obs.call('GetSceneItemList', { sceneName });
+    const [{ sceneItems }, { inputs }] = await Promise.all([
+      obs.call('GetSceneItemList', { sceneName }),
+      obs.call('GetInputList')
+    ]);
+    
+    const inputKindMap = new Map(inputs.map(input => [input.inputName, input.inputKind || '']));
     
     elements.sourcesList.innerHTML = '';
-    sceneItems.reverse().forEach(item => {
-      const sourceItem = createSourceItem(item);
+    for (const item of sceneItems.reverse()) {
+      const inputKind = inputKindMap.get(item.sourceName) || '';
+      const browserDetails = await getBrowserSourceDetails(item.sourceName, inputKind);
+      const sourceItem = await createSourceItem(item, inputKind, browserDetails);
       elements.sourcesList.appendChild(sourceItem);
-    });
+    }
   } catch (error) {
     console.error('Failed to load sources:', error);
     elements.sourcesList.innerHTML = '<div class="empty-state">Failed to load sources</div>';
   }
 }
 
-function createSourceItem(item) {
+async function createSourceItem(item, inputKind = '', browserDetails = null) {
   const div = document.createElement('div');
   div.className = `source-item ${item.sceneItemEnabled ? 'visible' : 'hidden'}`;
   div.dataset.sceneItemId = item.sceneItemId;
   div.dataset.sourceName = item.sourceName;
+  
+  const header = document.createElement('div');
+  header.className = 'source-header';
+
+  header.className = 'source-item-header';
   
   const iconSpan = document.createElement('i');
   iconSpan.className = `fas fa-${getSourceIcon(item.sourceType)}`;
@@ -1006,6 +2067,14 @@ function createSourceItem(item) {
   const nameSpan = document.createElement('span');
   nameSpan.className = 'source-name';
   nameSpan.textContent = item.sourceName;
+  
+  const actions = document.createElement('div');
+  actions.className = 'source-actions';
+  
+  const filtersBtn = document.createElement('button');
+  filtersBtn.className = 'btn-icon source-filters-btn';
+  filtersBtn.title = 'Filters';
+  filtersBtn.innerHTML = '<i class="fas fa-sliders-h"></i>';
   
   const visibilityBtn = document.createElement('button');
   visibilityBtn.className = 'btn-icon source-visibility-btn';
@@ -1017,10 +2086,113 @@ function createSourceItem(item) {
     const isCurrentlyVisible = div.classList.contains('visible');
     toggleSourceVisibility(item.sceneItemId, item.sourceName, !isCurrentlyVisible, visibilityBtn, div);
   };
+
+  actions.appendChild(filtersBtn);
+  actions.appendChild(visibilityBtn);
   
-  div.appendChild(iconSpan);
-  div.appendChild(nameSpan);
-  div.appendChild(visibilityBtn);
+  header.appendChild(iconSpan);
+  header.appendChild(nameSpan);
+  header.appendChild(actions);
+
+  const filtersContainer = document.createElement('div');
+  filtersContainer.className = 'filters-drawer';
+  filtersContainer.style.display = 'none';
+
+  filtersBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const isOpen = filtersContainer.style.display === 'block';
+    filtersContainer.style.display = isOpen ? 'none' : 'block';
+    filtersBtn.classList.toggle('active', !isOpen);
+    if (!isOpen) {
+      await renderSourceFilters(item.sourceName, filtersContainer);
+    }
+  };
+  
+  div.appendChild(header);
+  div.appendChild(filtersContainer);
+  header.appendChild(visibilityBtn);
+  div.appendChild(header);
+  
+  if (isBrowserSourceKind(inputKind) && browserDetails) {
+    const details = document.createElement('div');
+    details.className = 'browser-source-details';
+    
+    const urlRow = document.createElement('div');
+    urlRow.className = 'browser-url-row';
+    const urlLabel = document.createElement('span');
+    urlLabel.className = 'browser-url-label';
+    urlLabel.textContent = 'URL';
+    const urlValue = document.createElement('span');
+    urlValue.className = 'browser-url-value';
+    let currentUrl = browserDetails.url || 'Unavailable';
+    urlValue.textContent = currentUrl;
+    urlValue.title = currentUrl;
+    urlRow.appendChild(urlLabel);
+    urlRow.appendChild(urlValue);
+    
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'browser-actions';
+    const reloadBtn = document.createElement('button');
+    reloadBtn.className = 'btn btn-secondary btn-compact';
+    reloadBtn.innerHTML = '<i class="fas fa-rotate"></i> Reload';
+    reloadBtn.onclick = async (e) => {
+      e.stopPropagation();
+      await reloadBrowserSource(item.sourceName, reloadBtn);
+    };
+    
+    const editToggleBtn = document.createElement('button');
+    editToggleBtn.className = 'btn btn-secondary btn-compact';
+    editToggleBtn.innerHTML = '<i class="fas fa-pen"></i> Edit URL';
+    
+    const editRow = document.createElement('div');
+    editRow.className = 'browser-edit-row';
+    editRow.style.display = 'none';
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.value = currentUrl;
+    urlInput.placeholder = 'https://...';
+    urlInput.className = 'browser-url-input';
+    
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'btn btn-primary btn-compact';
+    applyBtn.innerHTML = '<i class="fas fa-check"></i> Apply';
+    applyBtn.onclick = async (e) => {
+      e.stopPropagation();
+      const newUrl = urlInput.value.trim();
+      const updated = await updateBrowserSourceUrl(item.sourceName, newUrl, urlValue, urlInput, applyBtn);
+      if (updated) {
+        currentUrl = newUrl;
+        editRow.style.display = 'none';
+      }
+    };
+    
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary btn-compact';
+    cancelBtn.innerHTML = '<i class="fas fa-times"></i> Cancel';
+    cancelBtn.onclick = (e) => {
+      e.stopPropagation();
+      urlInput.value = currentUrl;
+      editRow.style.display = 'none';
+    };
+    
+    editRow.appendChild(urlInput);
+    editRow.appendChild(applyBtn);
+    editRow.appendChild(cancelBtn);
+    
+    editToggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      editRow.style.display = editRow.style.display === 'none' ? 'flex' : 'none';
+      urlInput.focus();
+    };
+    
+    actionsRow.appendChild(reloadBtn);
+    actionsRow.appendChild(editToggleBtn);
+    
+    details.appendChild(urlRow);
+    details.appendChild(actionsRow);
+    details.appendChild(editRow);
+    div.appendChild(details);
+  }
   
   return div;
 }
@@ -1033,6 +2205,78 @@ function getSourceIcon(sourceType) {
     'OBS_SOURCE_TYPE_SCENE': 'layer-group'
   };
   return icons[sourceType] || 'cube';
+}
+
+function isBrowserSourceKind(inputKind) {
+  return (inputKind || '').toLowerCase().includes('browser');
+}
+
+async function getBrowserSourceDetails(inputName, inputKind) {
+  if (!isBrowserSourceKind(inputKind)) {
+    return null;
+  }
+  
+  try {
+    const { inputSettings } = await obs.call('GetInputSettings', { inputName });
+    return { url: inputSettings?.url || '' };
+  } catch (error) {
+    console.error(`Failed to get browser source settings for ${inputName}:`, error);
+    return { url: '' };
+  }
+}
+
+async function reloadBrowserSource(inputName, button) {
+  const previousDisabled = button.disabled;
+  try {
+    button.disabled = true;
+    let lastError = null;
+    for (const propertyName of ['refreshnocache', 'refresh']) {
+      try {
+        await obs.call('PressInputPropertiesButton', { inputName, propertyName });
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
+  } catch (error) {
+    console.error(`Failed to reload browser source ${inputName}:`, error);
+    alert(`Failed to reload browser source: ${error.message || error}`);
+  } finally {
+    button.disabled = previousDisabled;
+  }
+}
+
+async function updateBrowserSourceUrl(inputName, newUrl, urlLabel, inputEl, button) {
+  if (!newUrl) {
+    alert('URL cannot be empty.');
+    return false;
+  }
+  
+  if (!confirm('Apply new browser source URL and reload the source?')) {
+    return false;
+  }
+  
+  const previousDisabled = button.disabled;
+  try {
+    button.disabled = true;
+    await obs.call('SetInputSettings', {
+      inputName,
+      inputSettings: { url: newUrl },
+      overlay: true
+    });
+    urlLabel.textContent = newUrl;
+    urlLabel.title = newUrl;
+    inputEl.value = newUrl;
+    await reloadBrowserSource(inputName, button);
+    return true;
+  } catch (error) {
+    console.error(`Failed to update URL for ${inputName}:`, error);
+    alert(`Failed to update browser source URL: ${error.message || error}`);
+    return false;
+  } finally {
+    button.disabled = previousDisabled;
+  }
 }
 
 async function toggleSourceVisibility(sceneItemId, sourceName, enabled, button, sourceDiv) {
@@ -1052,6 +2296,174 @@ async function toggleSourceVisibility(sceneItemId, sourceName, enabled, button, 
   } catch (error) {
     console.error('Failed to toggle source visibility:', error);
     alert('Failed to toggle source visibility: ' + error.message);
+  }
+}
+
+// Source Filters
+async function renderSourceFilters(sourceName, container) {
+  container.innerHTML = '<div class="filters-loading">Loading filters...</div>';
+  try {
+    const { filters } = await obs.call('GetSourceFilterList', { sourceName });
+    if (!filters || filters.length === 0) {
+      container.innerHTML = '<div class="empty-state small">No filters on this source</div>';
+      return;
+    }
+    
+    container.innerHTML = '';
+    filters.forEach(filter => {
+      const row = createFilterRow(sourceName, filter, container);
+      container.appendChild(row);
+    });
+  } catch (error) {
+    console.error(`Failed to load filters for ${sourceName}:`, error);
+    container.innerHTML = '<div class="empty-state small">Failed to load filters</div>';
+  }
+}
+
+function createFilterRow(sourceName, filter, container) {
+  const row = document.createElement('div');
+  row.className = 'filter-row';
+  
+  const header = document.createElement('div');
+  header.className = 'filter-row-header';
+  const nameWrap = document.createElement('div');
+  nameWrap.className = 'filter-name';
+  const nameIcon = document.createElement('i');
+  nameIcon.className = 'fas fa-filter';
+  const nameSpan = document.createElement('span');
+  nameSpan.textContent = filter.filterName;
+  nameWrap.appendChild(nameIcon);
+  nameWrap.appendChild(nameSpan);
+  header.appendChild(nameWrap);
+  
+  const toggle = document.createElement('label');
+  toggle.className = 'switch';
+  const toggleInput = document.createElement('input');
+  toggleInput.type = 'checkbox';
+  toggleInput.checked = !!filter.filterEnabled;
+  const toggleSlider = document.createElement('span');
+  toggleSlider.className = 'slider round';
+  toggle.appendChild(toggleInput);
+  toggle.appendChild(toggleSlider);
+  toggleInput.addEventListener('change', async () => {
+    await setFilterEnabled(sourceName, filter.filterName, toggleInput.checked, container);
+  });
+  
+  header.appendChild(toggle);
+  row.appendChild(header);
+  
+  const controls = createFilterControls(sourceName, filter, container);
+  if (controls) {
+    row.appendChild(controls);
+  }
+  
+  return row;
+}
+
+function createFilterControls(sourceName, filter, container) {
+  const settings = filter.filterSettings || {};
+  const controls = document.createElement('div');
+  controls.className = 'filter-controls';
+  let hasControl = false;
+  
+  const addNumberControl = (label, key, value, min, max, step, isInteger = false) => {
+    hasControl = true;
+    let currentValue = value;
+    const wrapper = document.createElement('label');
+    wrapper.className = 'filter-control';
+    const span = document.createElement('span');
+    span.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.value = value;
+    input.min = min;
+    input.max = max;
+    input.step = step;
+    wrapper.appendChild(span);
+    wrapper.appendChild(input);
+    input.addEventListener('change', async (e) => {
+      const raw = isInteger ? parseInt(e.target.value, 10) : parseFloat(e.target.value);
+      if (Number.isNaN(raw)) {
+        showToast(`Enter a valid number between ${min} and ${max}.`);
+        e.target.value = currentValue;
+        return;
+      }
+      const clamped = Math.max(min, Math.min(max, raw));
+      if (clamped !== raw) {
+        e.target.value = clamped;
+      }
+      await updateFilterSetting(sourceName, filter.filterName, { [key]: clamped }, container);
+      currentValue = clamped;
+    });
+    controls.appendChild(wrapper);
+  };
+  
+  if (typeof settings.db === 'number') {
+    addNumberControl('Gain (dB)', 'db', settings.db, -30, 30, 0.1);
+  }
+  
+  if (typeof settings.brightness === 'number') {
+    addNumberControl('Brightness', 'brightness', settings.brightness, -2, 2, 0.05);
+  }
+  if (typeof settings.contrast === 'number') {
+    addNumberControl('Contrast', 'contrast', settings.contrast, 0, 2, 0.05);
+  }
+  if (typeof settings.saturation === 'number') {
+    addNumberControl('Saturation', 'saturation', settings.saturation, 0, 2, 0.05);
+  }
+  if (typeof settings.gamma === 'number') {
+    addNumberControl('Gamma', 'gamma', settings.gamma, 0, 3, 0.05);
+  }
+  
+  if (typeof settings.left === 'number') {
+    addNumberControl('Left', 'left', settings.left, 0, FILTER_CROP_MAX, 1, true);
+  }
+  if (typeof settings.right === 'number') {
+    addNumberControl('Right', 'right', settings.right, 0, FILTER_CROP_MAX, 1, true);
+  }
+  if (typeof settings.top === 'number') {
+    addNumberControl('Top', 'top', settings.top, 0, FILTER_CROP_MAX, 1, true);
+  }
+  if (typeof settings.bottom === 'number') {
+    addNumberControl('Bottom', 'bottom', settings.bottom, 0, FILTER_CROP_MAX, 1, true);
+  }
+  
+  if (typeof settings.threshold === 'number') {
+    addNumberControl('Threshold', 'threshold', settings.threshold, -60, 0, 0.5);
+  }
+  
+  if (!hasControl) {
+    controls.innerHTML = '<div class="filter-note">No quick controls for this filter type.</div>';
+  }
+  
+  return controls;
+}
+
+async function setFilterEnabled(sourceName, filterName, enabled, container) {
+  try {
+    await obs.call('SetSourceFilterEnabled', { sourceName, filterName, filterEnabled: enabled });
+  } catch (error) {
+    console.error(`Failed to toggle filter "${filterName}" on ${sourceName}:`, error);
+    showToast(`Failed to toggle filter "${filterName}": ${error.message}`);
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
+  }
+}
+
+async function updateFilterSetting(sourceName, filterName, partialSettings, container) {
+  try {
+    await obs.call('SetSourceFilterSettings', {
+      sourceName,
+      filterName,
+      filterSettings: partialSettings
+    });
+  } catch (error) {
+    console.error(`Failed to update filter settings for "${filterName}" on ${sourceName}:`, error);
+    showToast(`Failed to update settings for filter "${filterName}": ${error.message}`);
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
   }
 }
 
@@ -1163,6 +2575,7 @@ async function createAudioChannel(inputName, inputKind = 'unknown') {
       <div class="audio-meter" data-input="${inputName}">
         ${Array(20).fill('<div class="meter-bar"></div>').join('')}
       </div>
+      <div class="clip-indicator" aria-live="polite">CLIP</div>
     `;
     
     // Setup event listeners
@@ -1549,45 +2962,113 @@ async function setCurrentTransition() {
 // Statistics
 function startStatsPolling() {
   if (statsInterval) clearInterval(statsInterval);
+  lastStreamBytes = null;
+  lastBytesTimestamp = null;
+  dropHistory = [];
   
+  const intervalMs = Math.max(500, preferences.statsIntervalMs || DEFAULT_SETTINGS.statsIntervalMs);
   statsInterval = setInterval(async () => {
     try {
-      const stats = await obs.call('GetStats');
-      updateStats(stats);
-      
-      // Update streaming time
-      try {
-        const { outputActive, outputTimecode } = await obs.call('GetStreamStatus');
-        if (outputActive) {
-          elements.streamTime.textContent = outputTimecode || '00:00:00';
-        } else {
-          elements.streamTime.textContent = '--:--:--';
-        }
-      } catch (e) {
-        // Ignore
-      }
+      const now = Date.now();
+      const [stats, streamStatus, recordStatus] = await Promise.all([
+        obs.call('GetStats'),
+        obs.call('GetStreamStatus'),
+        obs.call('GetRecordStatus')
+      ]);
+      updateStats(stats, streamStatus, recordStatus, now);
     } catch (error) {
       console.error('Failed to get stats:', error);
     }
-  }, 1000);
+  }, statsConfig.intervalMs);
+  }, intervalMs);
 }
 
-function updateStats(stats) {
+function updateStats(stats, streamStatus = {}, recordStatus = {}, now = Date.now()) {
   elements.fpsValue.textContent = stats.activeFps ? stats.activeFps.toFixed(1) : '--';
   elements.cpuValue.textContent = stats.cpuUsage ? stats.cpuUsage.toFixed(1) + '%' : '--%';
   elements.memoryValue.textContent = stats.memoryUsage ? (stats.memoryUsage / 1024 / 1024).toFixed(0) + ' MB' : '-- MB';
   
-  if (stats.outputStats && stats.outputStats.length > 0) {
-    const output = stats.outputStats[0];
-    elements.bitrateValue.textContent = output.outputBytes 
-      ? (output.outputBytes / 1000).toFixed(0) + ' kbps' 
-      : '-- kbps';
+  const streamBytes = streamStatus.outputBytes ?? (stats.outputStats && stats.outputStats[0] ? stats.outputStats[0].outputBytes : null);
+  if (streamBytes != null) {
+    if (lastStreamBytes != null && lastBytesTimestamp != null) {
+      const deltaBytes = streamBytes - lastStreamBytes;
+      const deltaMs = Math.max(1, now - lastBytesTimestamp);
+      const kbps = (deltaBytes * 8) / deltaMs; // kb per second (since deltaMs in ms)
+      elements.bitrateValue.textContent = `${kbps.toFixed(0)} kbps`;
+    } else {
+      elements.bitrateValue.textContent = '-- kbps';
+    }
+    elements.bytesSent.textContent = formatBytes(streamBytes);
+    lastStreamBytes = streamBytes;
+    lastBytesTimestamp = now;
+  } else {
+    elements.bitrateValue.textContent = '-- kbps';
+    elements.bytesSent.textContent = '--';
   }
   
-  const droppedFrames = stats.renderSkippedFrames || 0;
-  const totalFrames = stats.renderTotalFrames || 1;
-  const droppedPercent = ((droppedFrames / totalFrames) * 100).toFixed(2);
-  elements.droppedFrames.textContent = `${droppedFrames} (${droppedPercent}%)`;
+  // OBS stats typically do not include received bytes; show if present, otherwise placeholder
+  if (elements.bytesReceived) elements.bytesReceived.textContent = streamStatus.outputBytesRecv ? formatBytes(streamStatus.outputBytesRecv) : '--';
+  
+  // Timecodes
+  if (elements.streamTime) elements.streamTime.textContent = streamStatus.outputActive ? (streamStatus.outputTimecode || '00:00:00') : '--:--:--';
+  if (elements.recordTime) elements.recordTime.textContent = recordStatus.outputActive ? (recordStatus.outputTimecode || '00:00:00') : '--:--:--';
+  
+  const droppedFrames = streamStatus.outputSkippedFrames ?? stats.renderSkippedFrames ?? 0;
+  const totalFrames = streamStatus.outputTotalFrames ?? stats.renderTotalFrames ?? 1;
+  const droppedPercent = totalFrames > 0 ? ((droppedFrames / totalFrames) * 100) : 0;
+  lastDropPercent = droppedPercent;
+  elements.droppedFrames.textContent = `${droppedFrames} (${droppedPercent.toFixed(2)}%)`;
+  
+  updateNetworkHealth(streamStatus, droppedPercent);
+  updateDropTrend(droppedPercent);
+}
+
+function updateNetworkHealth(streamStatus, droppedPercent) {
+  if (!elements.networkHealth) return;
+  const congestion = streamStatus.outputCongestion ?? 0;
+  const drop = droppedPercent ?? 0;
+  
+  let status = 'good';
+  if (congestion >= statsConfig.congestionBadPercent || drop >= statsConfig.dropAlertPercent) {
+    status = 'bad';
+  } else if (congestion >= statsConfig.congestionWarnPercent || drop >= statsConfig.dropWarnPercent) {
+    status = 'warn';
+  }
+  
+  elements.networkHealth.classList.remove('health-good', 'health-warn', 'health-bad', 'health-neutral');
+  elements.networkHealth.textContent = `${congestion.toFixed(1)}% cong / ${drop.toFixed(2)}% drop`;
+  if (status === 'good') elements.networkHealth.classList.add('health-good');
+  if (status === 'warn') elements.networkHealth.classList.add('health-warn');
+  if (status === 'bad') elements.networkHealth.classList.add('health-bad');
+}
+
+function updateDropTrend(dropPercent) {
+  if (!elements.dropTrend) return;
+  dropHistory.push(dropPercent);
+  if (dropHistory.length > 12) dropHistory.shift();
+  elements.dropTrend.textContent = renderSparkline(dropHistory);
+}
+
+function renderSparkline(values) {
+  const chars = ['▁','▂','▃','▄','▅','▆','▇','█'];
+  if (!values || values.length === 0) return '--';
+  const max = Math.max(values.reduce((a, b) => Math.max(a, b), 0), 1);
+  return values.map(v => {
+    const idx = Math.min(chars.length - 1, Math.floor((v / max) * (chars.length - 1)));
+    return chars[idx];
+  }).join('');
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return '--';
+  const units = ['B','KB','MB','GB'];
+  let val = bytes;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return `${val.toFixed(val >= 10 ? 0 : 1)} ${units[i]}`;
 }
 
 // Virtual Camera Control
@@ -1663,6 +3144,7 @@ async function switchSceneCollection(collectionName) {
     // Wait a moment for OBS to switch collections
     setTimeout(async () => {
       await loadSceneCollections();
+      clearSceneThumbnails(true);
       await loadScenes();
       await loadAudioSources();
     }, 500);
@@ -1706,6 +3188,7 @@ async function switchProfile(profileName) {
     // Wait a moment for OBS to switch profiles
     setTimeout(async () => {
       await loadProfiles();
+      clearSceneThumbnails(true);
       await loadScenes();
       await loadAudioSources();
     }, 500);
@@ -1718,8 +3201,10 @@ async function switchProfile(profileName) {
 // Recordings (removed - not supported by WebSocket)
 async function loadRecordings() {
   // OBS WebSocket doesn't provide a direct way to list recordings
-  // This function is kept for backwards compatibility but does nothing
   console.log('Recordings list not available via OBS WebSocket');
+  if (elements.recordingsList) {
+    elements.recordingsList.innerHTML = '<div class="empty-state">OBS WebSocket does not expose recordings list</div>';
+  }
 }
 
 // UI helpers
@@ -1729,14 +3214,20 @@ function enableControls() {
   if (elements.virtualCamBtn) elements.virtualCamBtn.disabled = false;
   elements.transitionSelect.disabled = false;
   elements.transitionDuration.disabled = false;
+  if (elements.statsIntervalInput) elements.statsIntervalInput.disabled = false;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.disabled = false;
+  if (elements.dropAlertInput) elements.dropAlertInput.disabled = false;
 }
 
 function resetUI() {
   elements.scenesList.innerHTML = '<div class="empty-state">Not connected to OBS</div>';
   elements.sourcesList.innerHTML = '<div class="empty-state">Select a scene</div>';
-  elements.audioMixer.innerHTML = '<div class="empty-state">No audio sources available</div>';
+  if (elements.audioMixer) elements.audioMixer.innerHTML = '<div class="empty-state">No audio sources available</div>';
   if (elements.collectionsList) elements.collectionsList.innerHTML = '<div class="empty-state">Not connected to OBS</div>';
   if (elements.profilesList) elements.profilesList.innerHTML = '<div class="empty-state">Not connected to OBS</div>';
+  if (elements.recordingsList) elements.recordingsList.innerHTML = '<div class="empty-state">Recordings list requires OBS connection</div>';
+  clearSceneThumbnails(true);
+  stopThumbnailRefresh();
   
   elements.streamBtn.disabled = true;
   elements.recordBtn.disabled = true;
@@ -1745,13 +3236,28 @@ function resetUI() {
   if (elements.transitionBtn) elements.transitionBtn.disabled = true;
   elements.transitionSelect.disabled = true;
   elements.transitionDuration.disabled = true;
+  if (elements.statsIntervalInput) elements.statsIntervalInput.disabled = true;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.disabled = true;
+  if (elements.dropAlertInput) elements.dropAlertInput.disabled = true;
   
   elements.streamTime.textContent = '--:--:--';
+  if (elements.recordTime) elements.recordTime.textContent = '--:--:--';
   elements.fpsValue.textContent = '--';
   elements.cpuValue.textContent = '--%';
   elements.memoryValue.textContent = '-- MB';
   elements.bitrateValue.textContent = '-- kbps';
   elements.droppedFrames.textContent = '0 (0%)';
+  if (elements.bytesSent) elements.bytesSent.textContent = '--';
+  if (elements.bytesReceived) elements.bytesReceived.textContent = '--';
+  if (elements.networkHealth) {
+    elements.networkHealth.textContent = '--';
+    elements.networkHealth.classList.remove('health-good', 'health-warn', 'health-bad');
+    elements.networkHealth.classList.add('health-neutral');
+  }
+  if (elements.dropTrend) elements.dropTrend.textContent = '--';
+  dropHistory = [];
+  lastStreamBytes = null;
+  lastBytesTimestamp = null;
   
   elements.studioModeToggle.checked = false;
   updateStudioModeUI();
@@ -1771,6 +3277,7 @@ function clearIntervals() {
     clearInterval(syncInterval);
     syncInterval = null;
   }
+  stopThumbnailRefresh();
   
   Object.values(audioLevelIntervals).forEach(interval => clearInterval(interval));
   audioLevelIntervals = {};
@@ -1780,6 +3287,7 @@ function clearIntervals() {
 function startBidirectionalSync() {
   if (syncInterval) clearInterval(syncInterval);
   
+  const intervalMs = Math.max(500, preferences.syncIntervalMs || DEFAULT_SETTINGS.syncIntervalMs);
   syncInterval = setInterval(async () => {
     if (!isConnected || !obs) return;
     
@@ -1862,12 +3370,30 @@ function startBidirectionalSync() {
       console.error('Bidirectional sync error:', error);
       // Don't spam errors if connection is lost
     }
-  }, 1000); // Poll every second
+  }, intervalMs); // Poll every second
 }
 
 // Initialize app when DOM is ready
 console.log('app.js loaded, waiting for DOMContentLoaded...');
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('DOMContentLoaded event fired!');
+  preferences = loadPreferences();
+  applyPreferences();
+  registerGlobalShortcuts();
   await init();
 });
+function showToast(message) {
+  if (!toastContainer) {
+    toastContainer = document.createElement('div');
+    toastContainer.className = 'toast-container';
+    document.body.appendChild(toastContainer);
+  }
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('toast-hide');
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
