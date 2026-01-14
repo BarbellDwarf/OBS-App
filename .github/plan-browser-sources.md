@@ -6,4 +6,3 @@
   2. Provide “Reload” action; optional URL edit field with apply and confirmation.
   3. Persist URL changes via SetInputSettings; reload after update; handle errors gracefully.
   4. Refresh browser source list on scene changes to keep URLs in sync.
-
