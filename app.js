@@ -48,6 +48,7 @@ const MIN_DB = -60;  // Minimum dB level (silent/very quiet)
 const MAX_DB = 0;    // Maximum dB level (peak/clipping)
 const DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
 const PEAK_THRESHOLD_DB = -5;  // dB level for peak indicator (red)
+const FILTER_CROP_MAX = 4000; // Upper bound aligns with typical HD/4K frame sizes
 
 let obs = null;
 let isConnected = false;
@@ -842,7 +843,6 @@ function createFilterControls(sourceName, filter, container) {
   const controls = document.createElement('div');
   controls.className = 'filter-controls';
   let hasControl = false;
-  const CROP_MAX = 4000; // Upper bound aligns with typical HD/4K frame sizes
   
   const addNumberControl = (label, key, value, min, max, step, isInteger = false) => {
     hasControl = true;
@@ -888,16 +888,16 @@ function createFilterControls(sourceName, filter, container) {
   }
   
   if (typeof settings.left === 'number') {
-    addNumberControl('Left', 'left', settings.left, 0, CROP_MAX, 1, true);
+    addNumberControl('Left', 'left', settings.left, 0, FILTER_CROP_MAX, 1, true);
   }
   if (typeof settings.right === 'number') {
-    addNumberControl('Right', 'right', settings.right, 0, CROP_MAX, 1, true);
+    addNumberControl('Right', 'right', settings.right, 0, FILTER_CROP_MAX, 1, true);
   }
   if (typeof settings.top === 'number') {
-    addNumberControl('Top', 'top', settings.top, 0, CROP_MAX, 1, true);
+    addNumberControl('Top', 'top', settings.top, 0, FILTER_CROP_MAX, 1, true);
   }
   if (typeof settings.bottom === 'number') {
-    addNumberControl('Bottom', 'bottom', settings.bottom, 0, CROP_MAX, 1, true);
+    addNumberControl('Bottom', 'bottom', settings.bottom, 0, FILTER_CROP_MAX, 1, true);
   }
   
   if (typeof settings.threshold === 'number') {
@@ -914,9 +914,6 @@ function createFilterControls(sourceName, filter, container) {
 async function setFilterEnabled(sourceName, filterName, enabled, container) {
   try {
     await obs.call('SetSourceFilterEnabled', { sourceName, filterName, filterEnabled: enabled });
-    if (container) {
-      await renderSourceFilters(sourceName, container);
-    }
   } catch (error) {
     console.error(`Failed to toggle filter "${filterName}" on ${sourceName}:`, error);
     alert('Failed to toggle filter: ' + error.message);
@@ -933,9 +930,6 @@ async function updateFilterSetting(sourceName, filterName, partialSettings, cont
       filterName,
       filterSettings: partialSettings
     });
-    if (container) {
-      await renderSourceFilters(sourceName, container);
-    }
   } catch (error) {
     console.error(`Failed to update filter settings for "${filterName}" on ${sourceName}:`, error);
     alert('Failed to update filter settings: ' + error.message);

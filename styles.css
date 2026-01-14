@@ -503,6 +503,14 @@ body {
   transform: translateX(16px);
 }
 
+.switch .slider.round {
+  border-radius: 20px;
+}
+
+.switch .slider.round::before {
+  border-radius: 50%;
+}
+
 .empty-state {
   padding: 40px 20px;
   text-align: center;
