@@ -8,4 +8,3 @@
   4. Frame drop trend sparkline over recent samples.
   5. Audio clipping warning based on peak threshold; per-source badge.
   6. Expose stats update frequency and alert thresholds in settings.
-

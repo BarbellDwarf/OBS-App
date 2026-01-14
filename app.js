@@ -43,6 +43,12 @@ class OBSWebSocketWrapper {
   }
 }
 
+// Audio meter constants
+const MIN_DB = -60;  // Minimum dB level (silent/very quiet)
+const MAX_DB = 0;    // Maximum dB level (peak/clipping)
+const DB_RANGE = MAX_DB - MIN_DB;  // Total dB range (60)
+const DEFAULT_PEAK_THRESHOLD_DB = -5;  // dB level for peak indicator (red)
+const MIN_STATS_INTERVAL_MS = 250;
 // Settings defaults
 const SETTINGS_KEY = 'obsPreferences';
 const SETTINGS_VERSION = 1;
@@ -84,6 +90,20 @@ let isConnected = false;
 let isStudioMode = false;
 let currentScene = null;
 let statsInterval = null;
+let statsConfig = {
+  intervalMs: 1000,
+  clipThresholdDb: DEFAULT_PEAK_THRESHOLD_DB,
+  dropAlertPercent: 5,
+  dropWarnPercent: 1.5,
+  congestionWarnPercent: 10,
+  congestionBadPercent: 25
+};
+let dropHistory = [];
+let lastStreamBytes = null;
+let lastBytesTimestamp = null;
+let streamStartTime = null;
+let recordStartTime = null;
+let lastDropPercent = 0;
 let audioLevelIntervals = {};
 let syncInterval = null; // For bidirectional sync
 let isUserInteractingWithTransition = false; // Prevent sync from overwriting user changes
@@ -123,11 +143,19 @@ const elements = {
   transitionSelect: document.getElementById('transition-select'),
   transitionDuration: document.getElementById('transition-duration'),
   streamTime: document.getElementById('stream-time'),
+  recordTime: document.getElementById('record-time'),
   fpsValue: document.getElementById('fps-value'),
   cpuValue: document.getElementById('cpu-value'),
   memoryValue: document.getElementById('memory-value'),
   bitrateValue: document.getElementById('bitrate-value'),
   droppedFrames: document.getElementById('dropped-frames'),
+  bytesSent: document.getElementById('bytes-sent'),
+  bytesReceived: document.getElementById('bytes-received'),
+  networkHealth: document.getElementById('network-health'),
+  dropTrend: document.getElementById('drop-trend'),
+  statsIntervalInput: document.getElementById('stats-interval-input'),
+  clipThresholdInput: document.getElementById('clip-threshold-input'),
+  dropAlertInput: document.getElementById('drop-alert-input'),
   savedConnections: document.getElementById('saved-connections'),
   saveConnectionBtn: document.getElementById('save-connection-btn'),
   deleteConnectionBtn: document.getElementById('delete-connection-btn'),
@@ -458,6 +486,7 @@ async function init() {
     setupEventListeners();
     loadConnectionsList();
     loadSettings();
+    loadStatsSettings();
     initializeLayoutPresets();
     console.log('OBS Remote Control initialized successfully');
   } catch (error) {
@@ -473,6 +502,9 @@ function setupEventListeners() {
   if (elements.recordBtn) elements.recordBtn.addEventListener('click', toggleRecording);
   if (elements.pauseRecordBtn) elements.pauseRecordBtn.addEventListener('click', pauseRecording);
   if (elements.virtualCamBtn) elements.virtualCamBtn.addEventListener('click', toggleVirtualCamera);
+  if (elements.statsIntervalInput) elements.statsIntervalInput.addEventListener('change', handleStatsSettingsChange);
+  if (elements.clipThresholdInput) elements.clipThresholdInput.addEventListener('change', handleStatsSettingsChange);
+  if (elements.dropAlertInput) elements.dropAlertInput.addEventListener('change', handleStatsSettingsChange);
   if (elements.studioModeToggle) elements.studioModeToggle.addEventListener('change', toggleStudioMode);
   if (elements.transitionBtn) elements.transitionBtn.addEventListener('click', performTransition);
   if (elements.transitionSelect) {
@@ -1020,6 +1052,28 @@ function scheduleAutoReconnect(reason = '') {
   }, delay);
 }
 
+function loadStatsSettings() {
+  const stored = JSON.parse(localStorage.getItem('obsStatsConfig') || '{}');
+  statsConfig = {
+    ...statsConfig,
+    ...stored
+  };
+  if (elements.statsIntervalInput) elements.statsIntervalInput.value = statsConfig.intervalMs;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.value = statsConfig.clipThresholdDb;
+  if (elements.dropAlertInput) elements.dropAlertInput.value = statsConfig.dropAlertPercent;
+}
+
+function handleStatsSettingsChange() {
+  const interval = parseInt(elements.statsIntervalInput?.value || statsConfig.intervalMs, 10);
+  const clip = parseFloat(elements.clipThresholdInput?.value || statsConfig.clipThresholdDb);
+  const dropAlert = parseFloat(elements.dropAlertInput?.value || statsConfig.dropAlertPercent);
+  statsConfig.intervalMs = Math.max(MIN_STATS_INTERVAL_MS, isNaN(interval) ? statsConfig.intervalMs : interval);
+  statsConfig.clipThresholdDb = isNaN(clip) ? statsConfig.clipThresholdDb : clip;
+  statsConfig.dropAlertPercent = isNaN(dropAlert) ? statsConfig.dropAlertPercent : dropAlert;
+  localStorage.setItem('obsStatsConfig', JSON.stringify(statsConfig));
+  if (isConnected) startStatsPolling(); // restart with new interval/threshold
+}
+
 // Connection handling
 async function handleConnect() {
   if (!obs) {
@@ -1284,7 +1338,7 @@ function updateAudioMeter(inputName, levelsMul) {
     if (index < activeCount) {
       bar.classList.add('active');
       // Peak indicator (red) for levels above PEAK_THRESHOLD_DB (very loud, near clipping)
-      if (dB > PEAK_THRESHOLD_DB) {
+      if (dB > statsConfig.clipThresholdDb) {
         bar.classList.add('peak');
       } else {
         bar.classList.remove('peak');
@@ -1293,6 +1347,15 @@ function updateAudioMeter(inputName, levelsMul) {
       bar.classList.remove('active', 'peak');
     }
   });
+  
+  const channel = meter.closest('.audio-channel');
+  if (channel) {
+    if (dB > statsConfig.clipThresholdDb) {
+      channel.classList.add('clipping');
+    } else {
+      channel.classList.remove('clipping');
+    }
+  }
 }
 
 // Scenes
@@ -1864,6 +1927,7 @@ async function createAudioChannel(inputName, inputKind = 'unknown') {
       <div class="audio-meter" data-input="${inputName}">
         ${Array(20).fill('<div class="meter-bar"></div>').join('')}
       </div>
+      <div class="clip-indicator" aria-live="polite">CLIP</div>
     `;
     
     // Setup event listeners
@@ -2173,46 +2237,113 @@ async function setCurrentTransition() {
 // Statistics
 function startStatsPolling() {
   if (statsInterval) clearInterval(statsInterval);
+  lastStreamBytes = null;
+  lastBytesTimestamp = null;
+  dropHistory = [];
   
   const intervalMs = Math.max(500, preferences.statsIntervalMs || DEFAULT_SETTINGS.statsIntervalMs);
   statsInterval = setInterval(async () => {
     try {
-      const stats = await obs.call('GetStats');
-      updateStats(stats);
-      
-      // Update streaming time
-      try {
-        const { outputActive, outputTimecode } = await obs.call('GetStreamStatus');
-        if (outputActive) {
-          elements.streamTime.textContent = outputTimecode || '00:00:00';
-        } else {
-          elements.streamTime.textContent = '--:--:--';
-        }
-      } catch (e) {
-        // Ignore
-      }
+      const now = Date.now();
+      const [stats, streamStatus, recordStatus] = await Promise.all([
+        obs.call('GetStats'),
+        obs.call('GetStreamStatus'),
+        obs.call('GetRecordStatus')
+      ]);
+      updateStats(stats, streamStatus, recordStatus, now);
     } catch (error) {
       console.error('Failed to get stats:', error);
     }
+  }, statsConfig.intervalMs);
   }, intervalMs);
 }
 
-function updateStats(stats) {
+function updateStats(stats, streamStatus = {}, recordStatus = {}, now = Date.now()) {
   elements.fpsValue.textContent = stats.activeFps ? stats.activeFps.toFixed(1) : '--';
   elements.cpuValue.textContent = stats.cpuUsage ? stats.cpuUsage.toFixed(1) + '%' : '--%';
   elements.memoryValue.textContent = stats.memoryUsage ? (stats.memoryUsage / 1024 / 1024).toFixed(0) + ' MB' : '-- MB';
   
-  if (stats.outputStats && stats.outputStats.length > 0) {
-    const output = stats.outputStats[0];
-    elements.bitrateValue.textContent = output.outputBytes 
-      ? (output.outputBytes / 1000).toFixed(0) + ' kbps' 
-      : '-- kbps';
+  const streamBytes = streamStatus.outputBytes ?? (stats.outputStats && stats.outputStats[0] ? stats.outputStats[0].outputBytes : null);
+  if (streamBytes != null) {
+    if (lastStreamBytes != null && lastBytesTimestamp != null) {
+      const deltaBytes = streamBytes - lastStreamBytes;
+      const deltaMs = Math.max(1, now - lastBytesTimestamp);
+      const kbps = (deltaBytes * 8) / deltaMs; // kb per second (since deltaMs in ms)
+      elements.bitrateValue.textContent = `${kbps.toFixed(0)} kbps`;
+    } else {
+      elements.bitrateValue.textContent = '-- kbps';
+    }
+    elements.bytesSent.textContent = formatBytes(streamBytes);
+    lastStreamBytes = streamBytes;
+    lastBytesTimestamp = now;
+  } else {
+    elements.bitrateValue.textContent = '-- kbps';
+    elements.bytesSent.textContent = '--';
   }
   
-  const droppedFrames = stats.renderSkippedFrames || 0;
-  const totalFrames = stats.renderTotalFrames || 1;
-  const droppedPercent = ((droppedFrames / totalFrames) * 100).toFixed(2);
-  elements.droppedFrames.textContent = `${droppedFrames} (${droppedPercent}%)`;
+  // OBS stats typically do not include received bytes; show if present, otherwise placeholder
+  if (elements.bytesReceived) elements.bytesReceived.textContent = streamStatus.outputBytesRecv ? formatBytes(streamStatus.outputBytesRecv) : '--';
+  
+  // Timecodes
+  if (elements.streamTime) elements.streamTime.textContent = streamStatus.outputActive ? (streamStatus.outputTimecode || '00:00:00') : '--:--:--';
+  if (elements.recordTime) elements.recordTime.textContent = recordStatus.outputActive ? (recordStatus.outputTimecode || '00:00:00') : '--:--:--';
+  
+  const droppedFrames = streamStatus.outputSkippedFrames ?? stats.renderSkippedFrames ?? 0;
+  const totalFrames = streamStatus.outputTotalFrames ?? stats.renderTotalFrames ?? 1;
+  const droppedPercent = totalFrames > 0 ? ((droppedFrames / totalFrames) * 100) : 0;
+  lastDropPercent = droppedPercent;
+  elements.droppedFrames.textContent = `${droppedFrames} (${droppedPercent.toFixed(2)}%)`;
+  
+  updateNetworkHealth(streamStatus, droppedPercent);
+  updateDropTrend(droppedPercent);
+}
+
+function updateNetworkHealth(streamStatus, droppedPercent) {
+  if (!elements.networkHealth) return;
+  const congestion = streamStatus.outputCongestion ?? 0;
+  const drop = droppedPercent ?? 0;
+  
+  let status = 'good';
+  if (congestion >= statsConfig.congestionBadPercent || drop >= statsConfig.dropAlertPercent) {
+    status = 'bad';
+  } else if (congestion >= statsConfig.congestionWarnPercent || drop >= statsConfig.dropWarnPercent) {
+    status = 'warn';
+  }
+  
+  elements.networkHealth.classList.remove('health-good', 'health-warn', 'health-bad', 'health-neutral');
+  elements.networkHealth.textContent = `${congestion.toFixed(1)}% cong / ${drop.toFixed(2)}% drop`;
+  if (status === 'good') elements.networkHealth.classList.add('health-good');
+  if (status === 'warn') elements.networkHealth.classList.add('health-warn');
+  if (status === 'bad') elements.networkHealth.classList.add('health-bad');
+}
+
+function updateDropTrend(dropPercent) {
+  if (!elements.dropTrend) return;
+  dropHistory.push(dropPercent);
+  if (dropHistory.length > 12) dropHistory.shift();
+  elements.dropTrend.textContent = renderSparkline(dropHistory);
+}
+
+function renderSparkline(values) {
+  const chars = ['▁','▂','▃','▄','▅','▆','▇','█'];
+  if (!values || values.length === 0) return '--';
+  const max = Math.max(values.reduce((a, b) => Math.max(a, b), 0), 1);
+  return values.map(v => {
+    const idx = Math.min(chars.length - 1, Math.floor((v / max) * (chars.length - 1)));
+    return chars[idx];
+  }).join('');
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return '--';
+  const units = ['B','KB','MB','GB'];
+  let val = bytes;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return `${val.toFixed(val >= 10 ? 0 : 1)} ${units[i]}`;
 }
 
 // Virtual Camera Control
@@ -2358,6 +2489,9 @@ function enableControls() {
   if (elements.virtualCamBtn) elements.virtualCamBtn.disabled = false;
   elements.transitionSelect.disabled = false;
   elements.transitionDuration.disabled = false;
+  if (elements.statsIntervalInput) elements.statsIntervalInput.disabled = false;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.disabled = false;
+  if (elements.dropAlertInput) elements.dropAlertInput.disabled = false;
 }
 
 function resetUI() {
@@ -2377,13 +2511,28 @@ function resetUI() {
   if (elements.transitionBtn) elements.transitionBtn.disabled = true;
   elements.transitionSelect.disabled = true;
   elements.transitionDuration.disabled = true;
+  if (elements.statsIntervalInput) elements.statsIntervalInput.disabled = true;
+  if (elements.clipThresholdInput) elements.clipThresholdInput.disabled = true;
+  if (elements.dropAlertInput) elements.dropAlertInput.disabled = true;
   
   elements.streamTime.textContent = '--:--:--';
+  if (elements.recordTime) elements.recordTime.textContent = '--:--:--';
   elements.fpsValue.textContent = '--';
   elements.cpuValue.textContent = '--%';
   elements.memoryValue.textContent = '-- MB';
   elements.bitrateValue.textContent = '-- kbps';
   elements.droppedFrames.textContent = '0 (0%)';
+  if (elements.bytesSent) elements.bytesSent.textContent = '--';
+  if (elements.bytesReceived) elements.bytesReceived.textContent = '--';
+  if (elements.networkHealth) {
+    elements.networkHealth.textContent = '--';
+    elements.networkHealth.classList.remove('health-good', 'health-warn', 'health-bad');
+    elements.networkHealth.classList.add('health-neutral');
+  }
+  if (elements.dropTrend) elements.dropTrend.textContent = '--';
+  dropHistory = [];
+  lastStreamBytes = null;
+  lastBytesTimestamp = null;
   
   elements.studioModeToggle.checked = false;
   updateStudioModeUI();
