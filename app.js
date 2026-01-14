@@ -924,6 +924,9 @@ async function updateFilterSetting(sourceName, filterName, partialSettings, cont
   } catch (error) {
     console.error(`Failed to update filter settings for "${filterName}" on ${sourceName}:`, error);
     alert('Failed to update filter settings: ' + error.message);
+    if (container) {
+      await renderSourceFilters(sourceName, container);
+    }
   }
 }
 
